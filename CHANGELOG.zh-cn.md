@@ -1,13 +1,38 @@
+## 1.4.0
+
+**Added**
+
+- 集成部分 FastjsonPayload
+- 添加以下表达式注入 Payload
+    - FreeMarker
+    - JXPath @unam4
+    - Thymeleaf @unam4
+    - Aviator @ReaJason
+    - JINJava @ReaJason
+    - Velocity @ReaJason
+- 使用 Exploit 模块时，直接生成 Payload 会自动判断端口是否开启，若服务端口未开启则自动开启对应服务。涉及 Exploit
+  模块：JNDI、FakeMySQL、JRMPListener、HTTPServer、TCPServer
+
+**Changed**
+
+- java-chains 迁移至 vulhub 项目下
+- 项目从 web-chains 更名 java-chains
+- [class-obf](https://github.com/jar-analyzer/class-obf) 混淆项目 从 v1.4.0 更新至 v1.5.0
+- 删除 WriteFile 字节码
+
 ## 1.3.1
 
 **新增**
+
 - SpringAopAspectjweaver 链
 
 **Bug修复**
+
 - 修复在 1.3.0 版本中 Payload 参数不生效问题
 - 修复一些 Gadget 参数设置报错问题
 
 **优化**
+
 - 提高脏数据 overlong utf8 大包生成速度
 - 在二次反序列化中支持混淆
 - 部分链的描述

@@ -1,13 +1,41 @@
+## 1.4.0
+
+**Added**
+
+- Integrated some FastjsonPayloads
+- Added the following Expression Injection Payloads:
+    - FreeMarker
+    - JXPath @unam4
+    - Thymeleaf @unam4
+    - Aviator @ReaJason
+    - JINJava @ReaJason
+    - Velocity @ReaJason
+- When using Exploit modules, directly generating a Payload will automatically check if the port is open. If the service
+  port is not open, it will automatically start the corresponding service. The involved Exploit modules include: JNDI,
+  FakeMySQL, JRMPListener, HTTPServer, TCPServer.
+
+**Changed**
+
+- java-chains migrated to the vulhub project.
+- Project renamed from web-chains to java-chains.
+- [class-obf](https://github.com/jar-analyzer/class-obf) obfuscation project updated from v1.4.0 to v1.5.0.
+- Removed WriteFile bytecode.
+- Removed the "delete" option from DownloadExec and WriteFileExec bytecode gadgets.
+- Gadget IP parameter now defaults to 127.0.0.1.
+
 ## 1.3.1
 
 **Added**
+
 - SpringAopAspectjweaver Chain
 
 **Bugfix**
+
 - Fixed issue where Payload parameters were ineffective in version 1.3.0
 - Fixed parameter setting errors for some Gadgets
 
 **Optimization**
+
 - Improved generation speed for large packets of overlong UTF8 dirty data
 - Added support for obfuscation in secondary deserialization
 - Improved descriptions for some chains
