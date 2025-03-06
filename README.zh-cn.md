@@ -58,7 +58,7 @@ docker run -d \
 使用以下命令从docker中获取随机生成的强密码
 
 ```shell
-docker logs $(docker ps | grep javachains/webchains | awk '{print $1}') | grep -E 'password'
+docker logs $(docker ps | grep javachains/javachains | awk '{print $1}') | grep -E 'password'
 ```
 
 输出示例

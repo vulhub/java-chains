@@ -63,7 +63,7 @@ Note: Only port `8011` is required for the generation function. Other ports are 
 Use the following command to retrieve the randomly generated strong password from Docker:
 
 ```shell
-docker logs $(docker ps | grep javachains/webchains | awk '{print $1}') | grep -E 'password'
+docker logs $(docker ps | grep javachains/javachains | awk '{print $1}') | grep -E 'password'
 ```
 
 Output example:
