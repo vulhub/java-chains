@@ -8,7 +8,13 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: write
+
 jobs:
+  # ====================================================
+  # Job 1: 核心构建 (只在 Ubuntu 上运行一次，节省资源)
+  # ====================================================
   build:
     runs-on: ubuntu-latest
     env:
@@ -22,7 +28,7 @@ jobs:
         with:
           repository: Java-Chains/chains
           token: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
-          fetch-depth: 0 # Required to fetch all history for tag detection
+          fetch-depth: 0
 
       - name: Set up Temurin JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
@@ -65,7 +71,7 @@ jobs:
           mvn clean install -DskipTests
           cd ..
 
-      # 前端
+      # 前端构建
       - name: Set up Node.js ${{ env.NODE_VERSION }}
         uses: actions/setup-node@v3
         with:
@@ -93,81 +99,197 @@ jobs:
       - name: Build Backend
         run: mvn clean package -DskipTests
 
-      - name: Create Release Directory
-        run: mkdir release
+      # 准备基础产物
+      - name: Prepare Base Artifacts
+        run: |
+          mkdir release_base
+          cp java-chains-*.jar release_base/java-chains.jar
+          cp chains-all-*.jar release_base/chains-all.jar
+          
+          # 克隆配置并在 artifacts 阶段就准备好，避免后续重复克隆
+          git clone https://${{ secrets.DEPENDENCY_REPO_TOKEN }}@github.com/Java-Chains/chains-config.git release_base/chains-config
+          rm -rf release_base/chains-config/.git
 
-      - name: Copy Java-Chains JAR to Release
-        run: cp java-chains-*.jar release/java-chains.jar
-
-      - name: Copy Chain-All JAR to Release
-        run: cp chains-all-*.jar release/chains-all.jar
-
-      - name: Upload Release Artifact (for non-tag pushes)
+      - name: Upload Base Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ inputs.version }}
-          path: release/
+          name: base-artifacts
+          path: release_base/
 
-
-  release_draft:
+  # ====================================================
+  # Job 2: 创建 Release (作为后续上传的目标)
+  # ====================================================
+  create_release:
     needs: build
-    permissions: write-all
     runs-on: ubuntu-latest
+    steps:
+      - name: Create Draft Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.JAVA_CHAINS_RELEASE_TOKEN }}
+        run: |
+          gh release create "${{ inputs.version }}" \
+            --draft \
+            --title "Release ${{ inputs.version }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --notes "Auto-generated release for version ${{ inputs.version }}"
+
+  # ====================================================
+  # Job 3: 矩阵打包 (并行处理5种架构 + JDK集成)
+  # ====================================================
+  bundle_assets:
+    needs: [build, create_release]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # AMD Linux
+          - os_api: linux
+            arch_api: x64
+            suffix: linux-amd64
+            ext: tar.gz
+          # ARM Linux
+          - os_api: linux
+            arch_api: aarch64
+            suffix: linux-aarch64
+            ext: tar.gz
+          # Windows x64
+          - os_api: windows
+            arch_api: x64
+            suffix: windows-amd64
+            ext: zip
+          # Intel MacOS
+          - os_api: mac
+            arch_api: x64
+            suffix: macos-amd64
+            ext: tar.gz
+          # Apple Silicon (M1/M2/M3)
+          - os_api: mac
+            arch_api: aarch64
+            suffix: macos-aarch64
+            ext: tar.gz
 
     steps:
-      - name: Download Artifact
+      - name: Download Base Artifacts
         uses: actions/download-artifact@v4
         with:
-          name: release-${{ inputs.version }}
-          path: release/
+          name: base-artifacts
+          path: base
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.JAVA_CHAINS_RELEASE_TOKEN }}
-        with:
-          tag_name: ${{ inputs.version }}
-          release_name: Release ${{ inputs.version }}
-          draft: true
-
-      - name: Upload Java-Chains Release Asset
-        id: upload-java-chains-release-asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.JAVA_CHAINS_RELEASE_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: release/java-chains.jar
-          asset_name: java-chains-${{ inputs.version }}.jar
-          asset_content_type: application/java-archive
-
-      - name: Upload Chains-All Release Asset
-        id: upload-chains-all-release-asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.JAVA_CHAINS_RELEASE_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: release/chains-all.jar
-          asset_name: chains-all-${{ inputs.version }}.jar
-          asset_content_type: application/java-archive
-
-      - name: Clone chains-config And Create Distribution Archive
+      - name: Download Temurin JDK 8 (${{ matrix.suffix }})
         run: |
-          cd release
-          git clone https://${{ secrets.DEPENDENCY_REPO_TOKEN }}@github.com/Java-Chains/chains-config.git chains-config
-          rm -rf chains-config/.git
-          tar -czvf java-chains-all.tar.gz java-chains.jar chains-config
-          cd ..
+          # 使用 Eclipse Adoptium API 获取最新的 JDK 8 下载链接
+          # 也可以在 URL 中指定 feature_version=8，image_type=jdk
+          
+          API_URL="https://api.adoptium.net/v3/binary/latest/8/ga/${{ matrix.os_api }}/${{ matrix.arch_api }}/jdk/hotspot/normal/eclipse"
+          
+          echo "Fetching JDK from: $API_URL"
+          
+          if [ "${{ matrix.ext }}" == "zip" ]; then
+            curl -L "$API_URL" -o jdk_bundle.zip
+            unzip -q jdk_bundle.zip -d jdk_extracted
+          else
+            curl -L "$API_URL" -o jdk_bundle.tar.gz
+            mkdir jdk_extracted
+            tar -xzf jdk_bundle.tar.gz -C jdk_extracted
+          fi
+          
+          # 重命名提取出的 JDK 目录为统一名称 'jdk'，方便后续脚本引用
+          # 提取出的目录通常类似于 'jdk8u432-b06'，我们需要找到它并重命名
+          mv jdk_extracted/* jdk_final
 
-      - name: Upload Release Asset (Tarball)
-        id: upload-release-asset-tar
-        uses: actions/upload-release-asset@v1
+      - name: Create Distribution Structure
+        run: |
+          DIST_DIR="java-chains-${{ inputs.version }}-${{ matrix.suffix }}"
+          mkdir -p "$DIST_DIR"
+          
+          # 复制 JARs
+          cp base/java-chains.jar "$DIST_DIR/"
+          cp base/chains-all.jar "$DIST_DIR/"
+          
+          # 复制 Config
+          cp -r base/chains-config "$DIST_DIR/"
+          
+          # 移动 JDK
+          mv jdk_final "$DIST_DIR/jdk"
+          
+          echo "DIST_DIR=$DIST_DIR" >> $GITHUB_ENV
+
+      - name: Generate Start Scripts (Linux/Mac)
+        if: matrix.os_api != 'windows'
+        run: |
+          cd ${{ env.DIST_DIR }}
+          # 创建启动脚本，强制使用内置 JDK
+          cat <<EOF > start.sh
+          #!/bin/bash
+          BASE_DIR=\$(cd "\$(dirname "\$0")" && pwd)
+          "\$BASE_DIR/jdk/bin/java" -jar "\$BASE_DIR/java-chains.jar"
+          EOF
+          chmod +x start.sh
+
+      - name: Generate Start Scripts (Windows)
+        if: matrix.os_api == 'windows'
+        run: |
+          cd ${{ env.DIST_DIR }}
+          # 创建 Windows 启动脚本
+          cat <<EOF > start.bat
+          @echo off
+          set "BASE_DIR=%~dp0"
+          "%BASE_DIR%jdk\bin\java.exe" -jar "%BASE_DIR%java-chains.jar"
+          pause
+          EOF
+
+      - name: Compress Asset
+        run: |
+          ASSET_NAME="${{ env.DIST_DIR }}.${{ matrix.ext }}"
+          if [ "${{ matrix.ext }}" == "zip" ]; then
+            zip -r -q "$ASSET_NAME" "${{ env.DIST_DIR }}"
+          else
+            tar -czf "$ASSET_NAME" "${{ env.DIST_DIR }}"
+          fi
+          echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
+
+      - name: Upload Asset to Release
         env:
           GITHUB_TOKEN: ${{ secrets.JAVA_CHAINS_RELEASE_TOKEN }}
+        run: |
+          gh release upload "${{ inputs.version }}" "${{ env.ASSET_NAME }}" --repo "$GITHUB_REPOSITORY"
+
+  # ====================================================
+  # Job 4: 上传标准包 (不带 JDK 的通用包)
+  # ====================================================
+  upload_standard_assets:
+    needs: [build, create_release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Base Artifacts
+        uses: actions/download-artifact@v4
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: release/java-chains-all.tar.gz
-          asset_name: java-chains-${{ inputs.version }}-all.tar.gz
-          asset_content_type: application/gzip
+          name: base-artifacts
+          path: base
+
+      - name: Upload Standalone JARs
+        env:
+          GITHUB_TOKEN: ${{ secrets.JAVA_CHAINS_RELEASE_TOKEN }}
+        run: |
+          cd base
+          # 重命名以包含版本号
+          cp java-chains.jar java-chains-${{ inputs.version }}.jar
+          cp chains-all.jar chains-all-${{ inputs.version }}.jar
+          
+          gh release upload "${{ inputs.version }}" \
+            "java-chains-${{ inputs.version }}.jar" \
+            "chains-all-${{ inputs.version }}.jar" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Create and Upload Universal Tarball (No JDK)
+        env:
+          GITHUB_TOKEN: ${{ secrets.JAVA_CHAINS_RELEASE_TOKEN }}
+        run: |
+          cd base
+          # 创建不含 JDK 的纯净版 tar.gz
+          tar -czvf java-chains-${{ inputs.version }}-all.tar.gz java-chains.jar chains-config
+          
+          gh release upload "${{ inputs.version }}" \
+            "java-chains-${{ inputs.version }}-all.tar.gz" \
+            --repo "$GITHUB_REPOSITORY"
