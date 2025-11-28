@@ -1,3 +1,34 @@
+## 1.4.2
+
+#### 🚀 新增功能
+
+- **新增 Echo 回显支持**：集成了多种新的 Echo 利用方式 @ReaJason
+- **高版本 JDK 支持**：新增多个支持 JDK 17+ 的利用链（Gadget 名称后缀带有 `HighJDK` 或 `HighVersion`）
+  @n1ght (https://www.n1ght.cn/)
+- **内嵌 JDK 支持**：支持发布包内嵌 JDK 环境，开箱即用。
+- **Payload 生成扩展**：
+    - 新增 FakeMySQLPipeFile 生成功能 @unam4
+    - 新增 JSF 加密 Payload 生成功能 @B0T1eR
+    - 新增 FileUpload1 上传利用链 @B0T1eR
+    - 新增 Hutool MapProxy 二次反序列化利用 @unam4
+- **环境探测**：新增 `javax_servlet` 与 `jakarta_servlet` 环境探测功能 @B0T1eR
+
+#### 🛠 优化改进
+
+- **JRMPListener 增强**：优化了 JRMP 监听器，防止泄漏本地 Lib 库信息，提高安全性 @unam4
+- **依赖区分**：明确区分了 `MchangeC3p0Reference` (com.mchange:c3p0) 与 `C3p0_C3p0Reference` (c3p0:c3p0) 两种依赖，避免混淆。
+- **UI 体验**：优化了前端登录界面的 UI 设计。
+
+#### 🐛 问题修复
+
+- 修复了端口冲突导致服务无法启动的问题。
+- 修复了在 Windows 环境下触发 Security Manager（安全管理器）异常的问题。
+
+#### ❤️ 致谢
+
+感谢以下用户反馈 Bug 并帮助改进项目：
+@Catherines77 @1diot9 @yuxianzi @Skay @jlkl @Ckmount
+
 ## 1.4.1
 
 **Added**

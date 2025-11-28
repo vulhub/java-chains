@@ -1,3 +1,36 @@
+## 1.4.2
+
+#### 🚀 New Features
+
+- **New Echo Modules**: Added multiple Echo chains/gadgets. Contributed by @ReaJason.
+- **High JDK Support**: Added support for multiple gadgets compatible with JDK 17+ (identified by `HighJDK` or
+  `HighVersion` suffix). Contributed by @n1ght (https://www.n1ght.cn/).
+- **Embedded JDK**: Support for bundled JDK in the release, allowing out-of-the-box usage.
+- **Payload Generation**:
+    - Added FakeMySQLPipeFile generation. Contributed by @unam4.
+    - Added JSF encrypted Payload generation. Contributed by @B0T1eR.
+    - Added FileUpload1 gadget. Contributed by @B0T1eR.
+    - Added Hutool MapProxy secondary deserialization gadget. Contributed by @unam4.
+- **Environment Detection**: Added detection for `javax_servlet` and `jakarta_servlet`. Contributed by @B0T1eR.
+
+#### 🛠 Improvements
+
+- **JRMPListener Optimization**: Improved JRMPListener to prevent leaking local library information. Contributed by
+  @unam4.
+- **Dependency Clarification**: Clearly distinguished between `MchangeC3p0Reference` (com.mchange:c3p0) and
+  `C3p0_C3p0Reference` (c3p0:c3p0).
+- **UI Update**: Optimized the frontend login user interface.
+
+#### 🐛 Bug Fixes
+
+- Fixed an issue causing port conflicts.
+- Fixed an issue triggering the Security Manager on Windows environments.
+
+#### ❤️ Acknowledgments
+
+Special thanks to the following users for reporting bugs and helping improve the project:
+@Catherines77 @1diot9 @yuxianzi @Skay @jlkl @Ckmount
+
 ## 1.4.1
 
 **Added**
