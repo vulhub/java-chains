@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   # ====================================================
-  # Job 1: 核心构建 (只在 Ubuntu 上运行一次，节省资源)
+  # Job 1: 核心构建
   # ====================================================
   build:
     runs-on: ubuntu-latest
@@ -23,7 +23,7 @@ jobs:
       PNPM_VERSION: '9.13.2'
 
     steps:
-      - name: Checkout Backend Code
+      - name: Checkout Code
         uses: actions/checkout@v3
         with:
           repository: Java-Chains/chains
@@ -57,28 +57,19 @@ jobs:
           bash mvn_install.sh
           cd ..
 
-      - name: Build and Install java-echo-generator
+      - name: Build and Install Generators
         run: |
           git clone https://${{ secrets.DEPENDENCY_REPO_TOKEN }}@github.com/Java-Chains/java-echo-generator.git java-echo-generator
-          cd java-echo-generator
-          mvn clean install -DskipTests
-          cd ..
-
-      - name: Build and Install java-memshell-generator
-        run: |
+          cd java-echo-generator && mvn clean install -DskipTests && cd ..
           git clone https://${{ secrets.DEPENDENCY_REPO_TOKEN }}@github.com/Java-Chains/java-memshell-generator.git java-memshell-generator
-          cd java-memshell-generator
-          mvn clean install -DskipTests
-          cd ..
+          cd java-memshell-generator && mvn clean install -DskipTests && cd ..
 
-      # 前端构建
-      - name: Set up Node.js ${{ env.NODE_VERSION }}
+      - name: Set up Node.js & pnpm
         uses: actions/setup-node@v3
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@v2
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -89,22 +80,47 @@ jobs:
           pnpm install
           pnpm build:prod
           cd ..
-
-      - name: Copy Frontend Assets to Backend
-        run: |
           mkdir -p java-chains/src/main/resources/static
           rm -rf java-chains/src/main/resources/static/*
           cp -r java-chains-front/dist/* java-chains/src/main/resources/static/
 
-      - name: Build Backend
-        run: mvn clean package -DskipTests
+      - name: Build Backend (Server & CLI)
+        run: |
+          mvn clean install -DskipTests -Dmaven.compiler.source=1.8 -Dmaven.compiler.target=1.8
 
       - name: Prepare Base Artifacts
         run: |
           mkdir release_base
-          cp java-chains-*.jar release_base/java-chains.jar
           
-          # 克隆配置并在 artifacts 阶段就准备好，避免后续重复克隆
+          # 1. 复制主程序
+          echo "Looking for java-chains Jar in ROOT directory..."
+          SERVER_JAR=$(find . -maxdepth 1 -name "java-chains-*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" ! -name "*.original" | head -n 1)
+          
+          if [ -f "$SERVER_JAR" ]; then
+            echo "✅ Found Server Jar at ROOT: $SERVER_JAR"
+            cp "$SERVER_JAR" release_base/java-chains.jar
+          else
+            echo "❌ Error: java-chains jar not found in root directory!"
+            ls -la
+            exit 1
+          fi
+          
+          # 2. 复制 CLI 工具 (依然需要复制出来，供 Job 4 单独打包，或备用)
+          CLI_JAR=$(find cli-chains/target -name "cli-chains-*-jar-with-dependencies.jar" | head -n 1)
+          if [ -z "$CLI_JAR" ]; then
+             CLI_JAR=$(find . -maxdepth 1 -name "cli-chains-*-jar-with-dependencies.jar" | head -n 1)
+          fi
+
+          if [ -f "$CLI_JAR" ]; then
+            echo "✅ Found CLI Jar: $CLI_JAR"
+            cp "$CLI_JAR" release_base/cli-chains.jar
+          else
+            echo "❌ Error: cli-chains jar not found!"
+            ls -R cli-chains/target/
+            exit 1
+          fi
+          
+          # 3. 复制配置
           git clone https://${{ secrets.DEPENDENCY_REPO_TOKEN }}@github.com/Java-Chains/chains-config.git release_base/chains-config
           rm -rf release_base/chains-config/.git
 
@@ -115,15 +131,13 @@ jobs:
           path: release_base/
 
   # ====================================================
-  # Job 2: 创建 Release (作为后续上传的目标)
+  # Job 2: Create Release
   # ====================================================
   create_release:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (Only for GH CLI context)
-        uses: actions/checkout@v3
-
+      - uses: actions/checkout@v3
       - name: Create Draft Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -135,7 +149,7 @@ jobs:
             --notes "Auto-generated release for version ${{ inputs.version }}"
 
   # ====================================================
-  # Job 3: 矩阵打包 (并行处理5种架构 + JDK集成)
+  # Job 3: 矩阵打包 (主程序不包含 CLI)
   # ====================================================
   bundle_assets:
     needs: [ build, create_release ]
@@ -144,83 +158,64 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # AMD Linux
           - os_api: linux
             arch_api: x64
             suffix: linux-amd64
             ext: tar.gz
-          # ARM Linux
           - os_api: linux
             arch_api: aarch64
             suffix: linux-aarch64
             ext: tar.gz
-          # Windows x64
           - os_api: windows
             arch_api: x64
             suffix: windows-amd64
             ext: zip
-          # Intel MacOS
+          - os_api: windows
+            arch_api: arm64
+            suffix: windows-arm64
+            ext: zip
           - os_api: mac
             arch_api: x64
             suffix: macos-amd64
             ext: tar.gz
-          # Apple Silicon (M1/M2/M3)
           - os_api: mac
             arch_api: aarch64
             suffix: macos-aarch64
             ext: tar.gz
 
     steps:
-      - name: Download Base Artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: base-artifacts
           path: base
 
-      - name: Download JDK 8 (${{ matrix.suffix }})
+      - name: Download JDK 8
         run: |
-          # 默认使用 Adoptium API
           API_URL="https://api.adoptium.net/v3/binary/latest/8/ga/${{ matrix.os_api }}/${{ matrix.arch_api }}/jdk/hotspot/normal/eclipse"
           
-          # 特殊处理：如果遇到 macOS aarch64，改用 Azul Zulu 下载链接
-          if [ "${{ matrix.os_api }}" == "mac" ] && [ "${{ matrix.arch_api }}" == "aarch64" ]; then
-             echo "Detected macOS aarch64 (Apple Silicon). Adoptium does not provide JDK 8 for this arch."
-             echo "Switching to Azul Zulu OpenJDK 8..."
-             # Azul Zulu JDK 8 for macOS ARM64 (这是直接下载链接，版本可能会变，建议使用 latest API 或固定版本)
-             # 为了稳定性，这里使用 Azul 的 API 获取最新 JDK 8 LTS
-             API_URL="https://api.azul.com/zulu/download/community/v1.0/bundles/latest/binary/?jdk_version=8&os=macos&arch=arm64&bundle_type=jdk&ext=tar.gz"
+          USE_AZUL="false"
+          if [ "${{ matrix.os_api }}" == "mac" ] && [ "${{ matrix.arch_api }}" == "aarch64" ]; then USE_AZUL="true"; fi
+          if [ "${{ matrix.os_api }}" == "windows" ] && [ "${{ matrix.arch_api }}" == "arm64" ]; then 
+             API_URL="https://api.adoptium.net/v3/binary/latest/8/ga/windows/x64/jdk/hotspot/normal/eclipse"
+             USE_AZUL="false"
           fi
-          
-          echo "Fetching JDK from: $API_URL"
+
+          if [ "$USE_AZUL" == "true" ]; then
+             AZUL_OS="${{ matrix.os_api }}"
+             if [ "$AZUL_OS" == "mac" ]; then AZUL_OS="macos"; fi
+             API_URL="https://api.azul.com/zulu/download/community/v1.0/bundles/latest/binary/?jdk_version=8&os=$AZUL_OS&arch=${{ matrix.arch_api }}&bundle_type=jdk&ext=${{ matrix.ext }}"
+          fi
           
           if [ "${{ matrix.ext }}" == "zip" ]; then
-            # Windows
-            curl -L "$API_URL" -o jdk_bundle.zip
-            unzip -q jdk_bundle.zip -d jdk_extracted
+            curl -L "$API_URL" -o jdk_bundle.zip && unzip -q jdk_bundle.zip -d jdk_extracted
           else
-            # Linux / Mac
-            curl -L "$API_URL" -o jdk_bundle.tar.gz
-            mkdir jdk_extracted
-            tar -xzf jdk_bundle.tar.gz -C jdk_extracted
+            curl -L "$API_URL" -o jdk_bundle.tar.gz && mkdir jdk_extracted && tar -xzf jdk_bundle.tar.gz -C jdk_extracted
           fi
           
-          # 重命名提取出的 JDK 目录为统一名称 'jdk'
-          # 注意：Azul 和 Adoptium 解压后的目录结构可能略有不同，需要通配符处理
-          # Azul 通常解压后是 zulu8.xx.xx-ca-jdk8.0.xx-macosx_aarch64
-          # Adoptium 解压后是 jdk8uXXX-bXX
-          
-          # 找到 jdk_extracted 下唯一的子目录并移动内容
           SUBDIR=$(ls jdk_extracted | head -n 1)
           mv "jdk_extracted/$SUBDIR" jdk_final
-          
-          # macOS 特殊处理：macOS 的 JDK 结构通常是 /Contents/Home 才是真正的 JAVA_HOME
-          if [ "${{ matrix.os_api }}" == "mac" ]; then
-             if [ -d "jdk_final/Contents/Home" ]; then
-               echo "Detected macOS bundle structure. Adjusting root..."
-               mv jdk_final/Contents/Home jdk_real
-               rm -rf jdk_final
-               mv jdk_real jdk_final
-             fi
+          if [ "${{ matrix.os_api }}" == "mac" ] && [ -d "jdk_final/Contents/Home" ]; then
+               mv jdk_final/Contents/Home jdk_real && rm -rf jdk_final && mv jdk_real jdk_final
           fi
 
       - name: Create Distribution Structure
@@ -228,41 +223,32 @@ jobs:
           DIST_DIR="java-chains-${{ inputs.version }}-${{ matrix.suffix }}"
           mkdir -p "$DIST_DIR"
           
-          # 复制 JAR
+          # ✅ 仅复制主程序和配置
           cp base/java-chains.jar "$DIST_DIR/"
-          
-          # 复制 Config
           cp -r base/chains-config "$DIST_DIR/"
-          
-          # 移动 JDK
           mv jdk_final "$DIST_DIR/jdk"
           
           echo "DIST_DIR=$DIST_DIR" >> $GITHUB_ENV
 
-      - name: Generate Start Scripts (Linux/Mac)
-        if: matrix.os_api != 'windows'
+      - name: Generate Start Scripts
         run: |
           cd ${{ env.DIST_DIR }}
-          cat <<EOF > start.sh
-          #!/bin/bash
-          BASE_DIR=\$(cd "\$(dirname "\$0")" && pwd)
-          "\$BASE_DIR/jdk/bin/java" -jar "\$BASE_DIR/java-chains.jar"
-          EOF
-          chmod +x start.sh
+          # ✅ 只生成主程序的启动脚本
+          if [ "${{ matrix.os_api }}" != "windows" ]; then
+            echo '#!/bin/bash' > start.sh
+            echo 'BASE_DIR=$(cd "$(dirname "$0")" && pwd)' >> start.sh
+            echo '"$BASE_DIR/jdk/bin/java" -jar "$BASE_DIR/java-chains.jar"' >> start.sh
+            chmod +x start.sh
+          else
+            echo '@echo off' > start.bat
+            echo 'set "BASE_DIR=%~dp0"' >> start.bat
+            echo '"%BASE_DIR%jdk\bin\java.exe" -jar "%BASE_DIR%java-chains.jar"' >> start.bat
+            echo 'pause' >> start.bat
+          fi
 
-      - name: Generate Start Scripts (Windows)
-        if: matrix.os_api == 'windows'
-        run: |
-          cd ${{ env.DIST_DIR }}
-          # 创建 Windows 启动脚本
-          cat <<EOF > start.bat
-          @echo off
-          set "BASE_DIR=%~dp0"
-          "%BASE_DIR%jdk\bin\java.exe" -jar "%BASE_DIR%java-chains.jar"
-          pause
-          EOF
-
-      - name: Compress Asset
+      - name: Compress and Upload
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ASSET_NAME="${{ env.DIST_DIR }}.${{ matrix.ext }}"
           if [ "${{ matrix.ext }}" == "zip" ]; then
@@ -270,74 +256,59 @@ jobs:
           else
             tar -czf "$ASSET_NAME" "${{ env.DIST_DIR }}"
           fi
-          echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
-
-      - name: Upload Asset to Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ inputs.version }}" "${{ env.ASSET_NAME }}" --repo "$GITHUB_REPOSITORY"
+          gh release upload "${{ inputs.version }}" "$ASSET_NAME" --repo "$GITHUB_REPOSITORY"
 
   # ====================================================
-  # Job 4: 上传标准包 (不带 JDK 的通用包)
+  # Job 4: 上传通用包 & CLI 独立包
   # ====================================================
   upload_standard_assets:
     needs: [ build, create_release ]
     runs-on: ubuntu-latest
     steps:
-      - name: Download Base Artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: base-artifacts
           path: base
 
-
-      - name: Create and Upload Universal Tarball (No JDK)
+      - name: Create and Upload Assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd base
-          # 创建不含 JDK 的纯净版 tar.gz
+          # 1. 通用包
           tar -czvf java-chains-${{ inputs.version }}.tar.gz java-chains.jar chains-config
-          
-          gh release upload "${{ inputs.version }}" \
-            "java-chains-${{ inputs.version }}.tar.gz" \
-            --repo "$GITHUB_REPOSITORY"
+          gh release upload "${{ inputs.version }}" "java-chains-${{ inputs.version }}.tar.gz" --repo "$GITHUB_REPOSITORY"
+
+          # 2. CLI 独立包 (保持不变，单独发布供需要的人下载)
+          mkdir cli_dist
+          cp cli-chains.jar cli_dist/
+          cp -r chains-config cli_dist/
+          tar -czvf cli-chains-${{ inputs.version }}.tar.gz -C cli_dist .
+          gh release upload "${{ inputs.version }}" "cli-chains-${{ inputs.version }}.tar.gz" --repo "$GITHUB_REPOSITORY"
 
   # ====================================================
-  # Job 5: 构建并推送 Docker 镜像 (直接使用构建产物)
+  # Job 5: Docker Build
   # ====================================================
   docker_build:
-    needs: build # 依赖 build 任务完成
+    needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Dockerfile
-        uses: actions/checkout@v4
-
-      # 直接下载 Job 1 生成的临时产物，不需要去 Release 下载
-      - name: Download Base Artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
           name: base-artifacts
           path: .
 
-      # 此时当前目录下有 java-chains.jar 和 chains-config 目录
-      # 正好符合 Dockerfile 的 COPY 需求 (假设你的 Dockerfile 是 COPY 这些文件)
+      - name: Clean up CLI for Docker context
+        run: rm -f cli-chains.jar
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to the Docker hub
-        uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-
-      - name: Build and push image to Docker Hub
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           file: Dockerfile
           context: .
