@@ -37,6 +37,7 @@ https://java-chains.vulhub.org/zh/docs/guide
 
 参考致谢：
 
+- https://github.com/ReaJason/MemShellParty
 - https://github.com/wh1t3p1g/ysomap
 - https://github.com/qi4L/JYso
 - https://github.com/X1r0z/JNDIMap

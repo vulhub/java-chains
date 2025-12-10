@@ -40,6 +40,7 @@ user's use of the tool, and the user of the tool shall do so at their own risk.
 
 Acknowledgments:
 
+- https://github.com/ReaJason/MemShellParty
 - https://github.com/wh1t3p1g/ysomap
 - https://github.com/qi4L/JYso
 - https://github.com/X1r0z/JNDIMap
