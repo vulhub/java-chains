@@ -31,8 +31,6 @@ jobs:
       java_echo_generator_ref: ${{ steps.manifest.outputs.java_echo_generator_ref }}
       java_memshell_generator_repository: ${{ steps.manifest.outputs.java_memshell_generator_repository }}
       java_memshell_generator_ref: ${{ steps.manifest.outputs.java_memshell_generator_ref }}
-      java_chains_front_repository: ${{ steps.manifest.outputs.java_chains_front_repository }}
-      java_chains_front_ref: ${{ steps.manifest.outputs.java_chains_front_ref }}
       chains_config_repository: ${{ steps.manifest.outputs.chains_config_repository }}
       chains_config_ref: ${{ steps.manifest.outputs.chains_config_ref }}
     steps:
@@ -74,7 +72,6 @@ jobs:
             chains_dev_jars
             java_echo_generator
             java_memshell_generator
-            java_chains_front
             chains_config
           ]
 
@@ -151,8 +148,6 @@ jobs:
           JAVA_ECHO_GENERATOR_REF: ${{ needs.resolve_release_meta.outputs.java_echo_generator_ref }}
           JAVA_MEMSHELL_GENERATOR_REPOSITORY: ${{ needs.resolve_release_meta.outputs.java_memshell_generator_repository }}
           JAVA_MEMSHELL_GENERATOR_REF: ${{ needs.resolve_release_meta.outputs.java_memshell_generator_ref }}
-          JAVA_CHAINS_FRONT_REPOSITORY: ${{ needs.resolve_release_meta.outputs.java_chains_front_repository }}
-          JAVA_CHAINS_FRONT_REF: ${{ needs.resolve_release_meta.outputs.java_chains_front_ref }}
           CHAINS_CONFIG_REPOSITORY: ${{ needs.resolve_release_meta.outputs.chains_config_repository }}
           CHAINS_CONFIG_REF: ${{ needs.resolve_release_meta.outputs.chains_config_ref }}
         run: |
@@ -173,7 +168,6 @@ jobs:
           clone_repo "$CHAINS_DEV_JARS_REPOSITORY" "release-deps/chains-dev-jars" "$CHAINS_DEV_JARS_REF"
           clone_repo "$JAVA_ECHO_GENERATOR_REPOSITORY" "release-deps/java-echo-generator" "$JAVA_ECHO_GENERATOR_REF"
           clone_repo "$JAVA_MEMSHELL_GENERATOR_REPOSITORY" "release-deps/java-memshell-generator" "$JAVA_MEMSHELL_GENERATOR_REF"
-          clone_repo "$JAVA_CHAINS_FRONT_REPOSITORY" "release-deps/java-chains-front" "$JAVA_CHAINS_FRONT_REF"
           clone_repo "$CHAINS_CONFIG_REPOSITORY" "release-deps/chains-config" "$CHAINS_CONFIG_REF"
 
       - name: Set up Temurin JDK ${{ env.JAVA_VERSION }}
@@ -233,14 +227,14 @@ jobs:
       - name: Build Frontend
         run: |
           (
-            cd release-deps/java-chains-front
+            cd frontend
             pnpm install
-            pnpm build:prod
+            pnpm build
           )
 
           mkdir -p java-chains/src/main/resources/static
           rm -rf java-chains/src/main/resources/static/*
-          cp -r release-deps/java-chains-front/dist/* java-chains/src/main/resources/static/
+          cp -r frontend/dist/* java-chains/src/main/resources/static/
 
       - name: Build Backend (Server & CLI)
         run: |

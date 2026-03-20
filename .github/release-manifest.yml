@@ -15,10 +15,6 @@ dependencies:
     repository: Java-Chains/java-memshell-generator
     ref: 965c630fa288fd7954dcf68009481d45d5cd81c8
 
-  java_chains_front:
-    repository: Java-Chains/java-chains-front
-    ref: 1c1d4cbf3c969b2b32905baeae7ce3b605b4d573
-
   chains_config:
     repository: Java-Chains/chains-config
     ref: c9e027059f82c37df0e026bd190499d2ddc7b223
