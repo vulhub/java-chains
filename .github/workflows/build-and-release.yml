@@ -4,8 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 1.3.1)"
+        description: "Release version without leading v (e.g. 2.0.0-beta1)"
         required: true
+        type: string
+      source_ref:
+        description: "Source ref in Java-Chains/chains (tag, branch, or commit). Defaults to v<version>"
+        required: false
         type: string
 
 permissions:
@@ -13,22 +17,164 @@ permissions:
 
 jobs:
   # ====================================================
+  # Job 0: 解析发布元信息
+  # ====================================================
+  resolve_release_meta:
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.meta.outputs.release_version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      source_ref: ${{ steps.meta.outputs.source_ref }}
+      chains_dev_jars_repository: ${{ steps.manifest.outputs.chains_dev_jars_repository }}
+      chains_dev_jars_ref: ${{ steps.manifest.outputs.chains_dev_jars_ref }}
+      java_echo_generator_repository: ${{ steps.manifest.outputs.java_echo_generator_repository }}
+      java_echo_generator_ref: ${{ steps.manifest.outputs.java_echo_generator_ref }}
+      java_memshell_generator_repository: ${{ steps.manifest.outputs.java_memshell_generator_repository }}
+      java_memshell_generator_ref: ${{ steps.manifest.outputs.java_memshell_generator_ref }}
+      java_chains_front_repository: ${{ steps.manifest.outputs.java_chains_front_repository }}
+      java_chains_front_ref: ${{ steps.manifest.outputs.java_chains_front_ref }}
+      chains_config_repository: ${{ steps.manifest.outputs.chains_config_repository }}
+      chains_config_ref: ${{ steps.manifest.outputs.chains_config_ref }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve Release Metadata
+        id: meta
+        shell: bash
+        run: |
+          VERSION_INPUT="${{ inputs.version }}"
+          VERSION="${VERSION_INPUT#v}"
+
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid version: $VERSION_INPUT"
+            echo "Use SemVer, for example: 2.0.0 or 2.0.0-beta1"
+            exit 1
+          fi
+
+          RELEASE_TAG="v$VERSION"
+          SOURCE_REF="${{ inputs.source_ref }}"
+          if [ -z "$SOURCE_REF" ]; then
+            SOURCE_REF="$RELEASE_TAG"
+          fi
+
+          echo "release_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Read Release Manifest
+        id: manifest
+        shell: bash
+        run: |
+          ruby <<'RUBY'
+          require 'yaml'
+
+          manifest = YAML.safe_load(File.read('.github/release-manifest.yml'), aliases: false)
+          dependencies = manifest.fetch('dependencies')
+          required = %w[
+            chains_dev_jars
+            java_echo_generator
+            java_memshell_generator
+            java_chains_front
+            chains_config
+          ]
+
+          File.open(ENV.fetch('GITHUB_OUTPUT'), 'a') do |out|
+            required.each do |name|
+              entry = dependencies[name] || abort("Missing dependency entry: #{name}")
+              repository = entry['repository'].to_s.strip
+              ref = entry['ref'].to_s.strip
+
+              abort("Missing repository for #{name}") if repository.empty?
+              abort("Missing ref for #{name}") if ref.empty?
+
+              out.puts "#{name}_repository=#{repository}"
+              out.puts "#{name}_ref=#{ref}"
+            end
+          end
+          RUBY
+
+  # ====================================================
   # Job 1: 核心构建
   # ====================================================
   build:
+    needs: resolve_release_meta
     runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source_revision.outputs.source_sha }}
     env:
       JAVA_VERSION: '8'
       NODE_VERSION: '23.2.0'
       PNPM_VERSION: '9.13.2'
+      GO_VERSION: '1.20.14'
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: Java-Chains/chains
+          ref: ${{ needs.resolve_release_meta.outputs.source_ref }}
           token: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
           fetch-depth: 0
+
+      - name: Capture Source Revision
+        id: source_revision
+        shell: bash
+        run: |
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Source Version
+        shell: bash
+        run: |
+          EXPECTED_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
+          POM_VERSION=$(sed -n '0,/<version>/s/.*<version>\([^<]*\)<\/version>.*/\1/p' pom.xml | head -n 1)
+
+          if [ -z "$POM_VERSION" ]; then
+            echo "Failed to read version from pom.xml"
+            exit 1
+          fi
+
+          if [ "$POM_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "Version mismatch:"
+            echo "  source_ref: ${{ needs.resolve_release_meta.outputs.source_ref }}"
+            echo "  pom.xml:    $POM_VERSION"
+            echo "  input:      $EXPECTED_VERSION"
+            echo "Please bump/tag the source repo first, or pass the correct source_ref."
+            exit 1
+          fi
+
+      - name: Clone Pinned Dependency Repositories
+        env:
+          DEPENDENCY_REPO_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
+          CHAINS_DEV_JARS_REPOSITORY: ${{ needs.resolve_release_meta.outputs.chains_dev_jars_repository }}
+          CHAINS_DEV_JARS_REF: ${{ needs.resolve_release_meta.outputs.chains_dev_jars_ref }}
+          JAVA_ECHO_GENERATOR_REPOSITORY: ${{ needs.resolve_release_meta.outputs.java_echo_generator_repository }}
+          JAVA_ECHO_GENERATOR_REF: ${{ needs.resolve_release_meta.outputs.java_echo_generator_ref }}
+          JAVA_MEMSHELL_GENERATOR_REPOSITORY: ${{ needs.resolve_release_meta.outputs.java_memshell_generator_repository }}
+          JAVA_MEMSHELL_GENERATOR_REF: ${{ needs.resolve_release_meta.outputs.java_memshell_generator_ref }}
+          JAVA_CHAINS_FRONT_REPOSITORY: ${{ needs.resolve_release_meta.outputs.java_chains_front_repository }}
+          JAVA_CHAINS_FRONT_REF: ${{ needs.resolve_release_meta.outputs.java_chains_front_ref }}
+          CHAINS_CONFIG_REPOSITORY: ${{ needs.resolve_release_meta.outputs.chains_config_repository }}
+          CHAINS_CONFIG_REF: ${{ needs.resolve_release_meta.outputs.chains_config_ref }}
+        run: |
+          mkdir -p release-deps
+
+          clone_repo() {
+            local repository="$1"
+            local directory="$2"
+            local ref="$3"
+            local url="https://x-access-token:${DEPENDENCY_REPO_TOKEN}@github.com/${repository}.git"
+
+            echo "Cloning ${repository} @ ${ref}"
+            git clone "$url" "$directory"
+            git -C "$directory" checkout "$ref"
+            echo "Resolved $(git -C "$directory" rev-parse HEAD) for ${repository}"
+          }
+
+          clone_repo "$CHAINS_DEV_JARS_REPOSITORY" "release-deps/chains-dev-jars" "$CHAINS_DEV_JARS_REF"
+          clone_repo "$JAVA_ECHO_GENERATOR_REPOSITORY" "release-deps/java-echo-generator" "$JAVA_ECHO_GENERATOR_REF"
+          clone_repo "$JAVA_MEMSHELL_GENERATOR_REPOSITORY" "release-deps/java-memshell-generator" "$JAVA_MEMSHELL_GENERATOR_REF"
+          clone_repo "$JAVA_CHAINS_FRONT_REPOSITORY" "release-deps/java-chains-front" "$JAVA_CHAINS_FRONT_REF"
+          clone_repo "$CHAINS_CONFIG_REPOSITORY" "release-deps/chains-config" "$CHAINS_CONFIG_REF"
 
       - name: Set up Temurin JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
@@ -43,86 +189,129 @@ jobs:
           maven-version: 3.9.6
 
       - name: Cache Maven dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.m2/repository
           key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
             ${{ runner.os }}-maven-
 
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: mcp-go/go.sum
+
       - name: Clone and Install Dev Jars
         run: |
-          git clone https://${{ secrets.DEPENDENCY_REPO_TOKEN }}@github.com/Java-Chains/chains-dev-jars.git chains-dev-jars
-          cd chains-dev-jars
-          bash mvn_install.sh
-          cd ..
+          (
+            cd release-deps/chains-dev-jars
+            bash mvn_install.sh
+          )
 
       - name: Build and Install Generators
         run: |
-          git clone https://${{ secrets.DEPENDENCY_REPO_TOKEN }}@github.com/Java-Chains/java-echo-generator.git java-echo-generator
-          cd java-echo-generator && mvn clean install -DskipTests && cd ..
-          git clone https://${{ secrets.DEPENDENCY_REPO_TOKEN }}@github.com/Java-Chains/java-memshell-generator.git java-memshell-generator
-          cd java-memshell-generator && mvn clean install -DskipTests && cd ..
+          (
+            cd release-deps/java-echo-generator
+            mvn clean install -DskipTests
+          )
+
+          (
+            cd release-deps/java-memshell-generator
+            mvn clean install -DskipTests
+          )
 
       - name: Set up Node.js & pnpm
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Build Frontend
         run: |
-          git clone https://${{ secrets.DEPENDENCY_REPO_TOKEN }}@github.com/Java-chains/java-chains-front.git java-chains-front
-          cd java-chains-front
-          pnpm install
-          pnpm build:prod
-          cd ..
+          (
+            cd release-deps/java-chains-front
+            pnpm install
+            pnpm build:prod
+          )
+
           mkdir -p java-chains/src/main/resources/static
           rm -rf java-chains/src/main/resources/static/*
-          cp -r java-chains-front/dist/* java-chains/src/main/resources/static/
+          cp -r release-deps/java-chains-front/dist/* java-chains/src/main/resources/static/
 
       - name: Build Backend (Server & CLI)
         run: |
           mvn clean install -DskipTests -Dmaven.compiler.source=1.8 -Dmaven.compiler.target=1.8
 
+      - name: Build MCP Binaries
+        run: |
+          mkdir -p release_base/mcp-binaries
+          cd mcp-go
+
+          build_mcp() {
+            local goos="$1"
+            local goarch="$2"
+            local output="$3"
+            echo "Building ${output} ..."
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags="-s -w" -o "../release_base/mcp-binaries/${output}" ./cmd/mcp-go
+          }
+
+          build_mcp linux amd64 mcp-go-linux-amd64
+          build_mcp linux arm64 mcp-go-linux-aarch64
+          build_mcp windows amd64 mcp-go-windows-amd64.exe
+          build_mcp windows arm64 mcp-go-windows-arm64.exe
+          build_mcp darwin amd64 mcp-go-macos-amd64
+          build_mcp darwin arm64 mcp-go-macos-aarch64
+
       - name: Prepare Base Artifacts
         run: |
-          mkdir release_base
-          
-          # 1. 复制主程序
-          echo "Looking for java-chains Jar in ROOT directory..."
-          SERVER_JAR=$(find . -maxdepth 1 -name "java-chains-*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" ! -name "*.original" | head -n 1)
-          
+          mkdir -p release_base
+
+          # 1. 复制主程序，v2.0 优先使用可执行 Spring Boot fat jar
+          SERVER_JAR=$(find . -maxdepth 1 -type f -name "java-chains-*-exec.jar" | sort | head -n 1)
+          if [ -z "$SERVER_JAR" ]; then
+            SERVER_JAR=$(find . -maxdepth 1 -type f -name "java-chains-*.jar" \
+              ! -name "*-sources.jar" \
+              ! -name "*-javadoc.jar" \
+              ! -name "*.original" | sort | head -n 1)
+          fi
+
           if [ -f "$SERVER_JAR" ]; then
-            echo "✅ Found Server Jar at ROOT: $SERVER_JAR"
+            echo "Found Server Jar: $SERVER_JAR"
             cp "$SERVER_JAR" release_base/java-chains.jar
           else
-            echo "❌ Error: java-chains jar not found in root directory!"
+            echo "Error: java-chains jar not found in root directory"
             ls -la
             exit 1
           fi
-          
-          # 2. 复制 CLI 工具 (依然需要复制出来，供 Job 4 单独打包，或备用)
-          CLI_JAR=$(find cli-chains/target -name "cli-chains-*-jar-with-dependencies.jar" | head -n 1)
+
+          # 2. 复制 CLI 工具，保留独立发布
+          CLI_JAR=$(find cli-chains/target -type f -name "cli-chains-*-jar-with-dependencies.jar" | sort | head -n 1)
           if [ -z "$CLI_JAR" ]; then
-             CLI_JAR=$(find . -maxdepth 1 -name "cli-chains-*-jar-with-dependencies.jar" | head -n 1)
+            CLI_JAR=$(find . -maxdepth 1 -type f -name "cli-chains-*-jar-with-dependencies.jar" | sort | head -n 1)
           fi
 
           if [ -f "$CLI_JAR" ]; then
-            echo "✅ Found CLI Jar: $CLI_JAR"
+            echo "Found CLI Jar: $CLI_JAR"
             cp "$CLI_JAR" release_base/cli-chains.jar
           else
-            echo "❌ Error: cli-chains jar not found!"
-            ls -R cli-chains/target/
+            echo "Error: cli-chains jar not found"
+            find cli-chains -maxdepth 3 -type f | sort
             exit 1
           fi
-          
-          # 3. 复制配置
-          git clone https://${{ secrets.DEPENDENCY_REPO_TOKEN }}@github.com/Java-Chains/chains-config.git release_base/chains-config
+
+          # 3. 复制配置，并覆盖 v2.0 新增的 MCP 配置目录
+          cp -r release-deps/chains-config release_base/chains-config
           rm -rf release_base/chains-config/.git
+
+          if [ -d chains-config/mcp ]; then
+            mkdir -p release_base/chains-config/mcp
+            cp -r chains-config/mcp/. release_base/chains-config/mcp/
+          fi
 
       - name: Upload Base Artifacts
         uses: actions/upload-artifact@v4
@@ -134,25 +323,44 @@ jobs:
   # Job 2: Create Release
   # ====================================================
   create_release:
-    needs: build
+    needs: [ resolve_release_meta, build ]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+
       - name: Create Draft Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ inputs.version }}" \
+          RELEASE_TAG="${{ needs.resolve_release_meta.outputs.release_tag }}"
+          RELEASE_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
+          SOURCE_REF="${{ needs.resolve_release_meta.outputs.source_ref }}"
+          SOURCE_SHA="${{ needs.build.outputs.source_sha }}"
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists, skip creation."
+            exit 0
+          fi
+
+          cat > release-notes.txt <<EOF
+          Auto-generated release for version ${RELEASE_VERSION}
+
+          Source repository: Java-Chains/chains
+          Source ref: ${SOURCE_REF}
+          Source commit: ${SOURCE_SHA}
+          EOF
+
+          gh release create "$RELEASE_TAG" \
             --draft \
-            --title "Release ${{ inputs.version }}" \
+            --title "Release $RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --notes "Auto-generated release for version ${{ inputs.version }}"
+            --notes-file release-notes.txt
 
   # ====================================================
-  # Job 3: 矩阵打包 (主程序不包含 CLI)
+  # Job 3: 矩阵打包 (主程序 + 对应平台 MCP)
   # ====================================================
   bundle_assets:
-    needs: [ build, create_release ]
+    needs: [ resolve_release_meta, build, create_release ]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -162,26 +370,38 @@ jobs:
             arch_api: x64
             suffix: linux-amd64
             ext: tar.gz
+            mcp_binary: mcp-go-linux-amd64
+            mcp_target: mcp-go
           - os_api: linux
             arch_api: aarch64
             suffix: linux-aarch64
             ext: tar.gz
+            mcp_binary: mcp-go-linux-aarch64
+            mcp_target: mcp-go
           - os_api: windows
             arch_api: x64
             suffix: windows-amd64
             ext: zip
+            mcp_binary: mcp-go-windows-amd64.exe
+            mcp_target: mcp-go.exe
           - os_api: windows
             arch_api: arm64
             suffix: windows-arm64
             ext: zip
+            mcp_binary: mcp-go-windows-arm64.exe
+            mcp_target: mcp-go.exe
           - os_api: mac
             arch_api: x64
-            suffix: macos-amd64
+            suffix: macos-intel
             ext: tar.gz
+            mcp_binary: mcp-go-macos-amd64
+            mcp_target: mcp-go
           - os_api: mac
             arch_api: aarch64
-            suffix: macos-aarch64
+            suffix: macos-m-series
             ext: tar.gz
+            mcp_binary: mcp-go-macos-aarch64
+            mcp_target: mcp-go
 
     steps:
       - uses: actions/download-artifact@v4
@@ -192,77 +412,99 @@ jobs:
       - name: Download JDK 8
         run: |
           API_URL="https://api.adoptium.net/v3/binary/latest/8/ga/${{ matrix.os_api }}/${{ matrix.arch_api }}/jdk/hotspot/normal/eclipse"
-          
+
           USE_AZUL="false"
-          if [ "${{ matrix.os_api }}" == "mac" ] && [ "${{ matrix.arch_api }}" == "aarch64" ]; then USE_AZUL="true"; fi
-          if [ "${{ matrix.os_api }}" == "windows" ] && [ "${{ matrix.arch_api }}" == "arm64" ]; then 
-             API_URL="https://api.adoptium.net/v3/binary/latest/8/ga/windows/x64/jdk/hotspot/normal/eclipse"
-             USE_AZUL="false"
+          if [ "${{ matrix.os_api }}" = "mac" ] && [ "${{ matrix.arch_api }}" = "aarch64" ]; then
+            USE_AZUL="true"
+          fi
+          if [ "${{ matrix.os_api }}" = "windows" ] && [ "${{ matrix.arch_api }}" = "arm64" ]; then
+            API_URL="https://api.adoptium.net/v3/binary/latest/8/ga/windows/x64/jdk/hotspot/normal/eclipse"
           fi
 
-          if [ "$USE_AZUL" == "true" ]; then
-             AZUL_OS="${{ matrix.os_api }}"
-             if [ "$AZUL_OS" == "mac" ]; then AZUL_OS="macos"; fi
-             API_URL="https://api.azul.com/zulu/download/community/v1.0/bundles/latest/binary/?jdk_version=8&os=$AZUL_OS&arch=${{ matrix.arch_api }}&bundle_type=jdk&ext=${{ matrix.ext }}"
+          if [ "$USE_AZUL" = "true" ]; then
+            AZUL_OS="${{ matrix.os_api }}"
+            if [ "$AZUL_OS" = "mac" ]; then
+              AZUL_OS="macos"
+            fi
+            API_URL="https://api.azul.com/zulu/download/community/v1.0/bundles/latest/binary/?jdk_version=8&os=$AZUL_OS&arch=${{ matrix.arch_api }}&bundle_type=jdk&ext=${{ matrix.ext }}"
           fi
-          
-          if [ "${{ matrix.ext }}" == "zip" ]; then
-            curl -L "$API_URL" -o jdk_bundle.zip && unzip -q jdk_bundle.zip -d jdk_extracted
+
+          if [ "${{ matrix.ext }}" = "zip" ]; then
+            curl -L "$API_URL" -o jdk_bundle.zip
+            unzip -q jdk_bundle.zip -d jdk_extracted
           else
-            curl -L "$API_URL" -o jdk_bundle.tar.gz && mkdir jdk_extracted && tar -xzf jdk_bundle.tar.gz -C jdk_extracted
+            curl -L "$API_URL" -o jdk_bundle.tar.gz
+            mkdir jdk_extracted
+            tar -xzf jdk_bundle.tar.gz -C jdk_extracted
           fi
-          
+
           SUBDIR=$(ls jdk_extracted | head -n 1)
           mv "jdk_extracted/$SUBDIR" jdk_final
-          if [ "${{ matrix.os_api }}" == "mac" ] && [ -d "jdk_final/Contents/Home" ]; then
-               mv jdk_final/Contents/Home jdk_real && rm -rf jdk_final && mv jdk_real jdk_final
+          if [ "${{ matrix.os_api }}" = "mac" ] && [ -d "jdk_final/Contents/Home" ]; then
+            mv jdk_final/Contents/Home jdk_real
+            rm -rf jdk_final
+            mv jdk_real jdk_final
           fi
 
       - name: Create Distribution Structure
         run: |
-          DIST_DIR="java-chains-${{ inputs.version }}-${{ matrix.suffix }}"
+          DIST_DIR="java-chains-${{ needs.resolve_release_meta.outputs.release_version }}-${{ matrix.suffix }}"
           mkdir -p "$DIST_DIR"
-          
-          # ✅ 仅复制主程序和配置
+
           cp base/java-chains.jar "$DIST_DIR/"
           cp -r base/chains-config "$DIST_DIR/"
+          cp "base/mcp-binaries/${{ matrix.mcp_binary }}" "$DIST_DIR/${{ matrix.mcp_target }}"
           mv jdk_final "$DIST_DIR/jdk"
-          
-          echo "DIST_DIR=$DIST_DIR" >> $GITHUB_ENV
+
+          if [ "${{ matrix.os_api }}" != "windows" ]; then
+            chmod +x "$DIST_DIR/${{ matrix.mcp_target }}"
+          fi
+
+          echo "DIST_DIR=$DIST_DIR" >> "$GITHUB_ENV"
 
       - name: Generate Start Scripts
         run: |
-          cd ${{ env.DIST_DIR }}
-          # ✅ 只生成主程序的启动脚本
+          cd "${{ env.DIST_DIR }}"
           if [ "${{ matrix.os_api }}" != "windows" ]; then
             echo '#!/bin/bash' > start.sh
             echo 'BASE_DIR=$(cd "$(dirname "$0")" && pwd)' >> start.sh
             echo '"$BASE_DIR/jdk/bin/java" -jar "$BASE_DIR/java-chains.jar"' >> start.sh
             chmod +x start.sh
+
+            echo '#!/bin/bash' > start-mcp.sh
+            echo 'BASE_DIR=$(cd "$(dirname "$0")" && pwd)' >> start-mcp.sh
+            echo 'exec "$BASE_DIR/mcp-go" "$@"' >> start-mcp.sh
+            chmod +x start-mcp.sh
           else
             echo '@echo off' > start.bat
             echo 'set "BASE_DIR=%~dp0"' >> start.bat
             echo '"%BASE_DIR%jdk\bin\java.exe" -jar "%BASE_DIR%java-chains.jar"' >> start.bat
             echo 'pause' >> start.bat
+
+            echo '@echo off' > start-mcp.bat
+            echo 'set "BASE_DIR=%~dp0"' >> start-mcp.bat
+            echo '"%BASE_DIR%mcp-go.exe" %*' >> start-mcp.bat
           fi
 
       - name: Compress and Upload
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          RELEASE_TAG="${{ needs.resolve_release_meta.outputs.release_tag }}"
           ASSET_NAME="${{ env.DIST_DIR }}.${{ matrix.ext }}"
-          if [ "${{ matrix.ext }}" == "zip" ]; then
+          if [ "${{ matrix.ext }}" = "zip" ]; then
             zip -r -q "$ASSET_NAME" "${{ env.DIST_DIR }}"
           else
             tar -czf "$ASSET_NAME" "${{ env.DIST_DIR }}"
           fi
-          gh release upload "${{ inputs.version }}" "$ASSET_NAME" --repo "$GITHUB_REPOSITORY"
+
+          gh release upload "$RELEASE_TAG" "$ASSET_NAME" --clobber --repo "$GITHUB_REPOSITORY"
 
   # ====================================================
-  # Job 4: 上传通用包 & CLI 独立包
+  # Job 4: 上传通用包 / MCP 全平台包 / CLI 独立包
   # ====================================================
   upload_standard_assets:
-    needs: [ build, create_release ]
+    needs: [ resolve_release_meta, build, create_release ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -274,33 +516,40 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          RELEASE_TAG="${{ needs.resolve_release_meta.outputs.release_tag }}"
+          RELEASE_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
           cd base
-          # 1. 通用包
-          tar -czvf java-chains-${{ inputs.version }}.tar.gz java-chains.jar chains-config
-          gh release upload "${{ inputs.version }}" "java-chains-${{ inputs.version }}.tar.gz" --repo "$GITHUB_REPOSITORY"
 
-          # 2. CLI 独立包 (保持不变，单独发布供需要的人下载)
+          tar -czvf "java-chains-${RELEASE_VERSION}.tar.gz" java-chains.jar chains-config
+          gh release upload "$RELEASE_TAG" "java-chains-${RELEASE_VERSION}.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
+
+          tar -czvf "mcp-go-${RELEASE_VERSION}-binaries.tar.gz" mcp-binaries
+          gh release upload "$RELEASE_TAG" "mcp-go-${RELEASE_VERSION}-binaries.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
+
           mkdir cli_dist
           cp cli-chains.jar cli_dist/
           cp -r chains-config cli_dist/
-          tar -czvf cli-chains-${{ inputs.version }}.tar.gz -C cli_dist .
-          gh release upload "${{ inputs.version }}" "cli-chains-${{ inputs.version }}.tar.gz" --repo "$GITHUB_REPOSITORY"
+          tar -czvf "cli-chains-${RELEASE_VERSION}.tar.gz" -C cli_dist .
+          gh release upload "$RELEASE_TAG" "cli-chains-${RELEASE_VERSION}.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
 
   # ====================================================
   # Job 5: Docker Build
   # ====================================================
   docker_build:
-    needs: build
+    needs: [ resolve_release_meta, build ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: base-artifacts
           path: .
 
-      - name: Clean up CLI for Docker context
-        run: rm -f cli-chains.jar
+      - name: Clean up release extras for Docker context
+        run: |
+          rm -f cli-chains.jar
+          rm -rf mcp-binaries
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -308,6 +557,7 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
       - uses: docker/build-push-action@v6
         with:
           file: Dockerfile
@@ -315,5 +565,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            javachains/javachains:${{ inputs.version }}
+            javachains/javachains:${{ needs.resolve_release_meta.outputs.release_version }}
             javachains/javachains:latest
