@@ -40,6 +40,7 @@ jobs:
         id: check
         env:
           DEPENDENCY_REPO_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SOURCE_REF="${{ inputs.source_ref || 'main' }}"
 
@@ -77,8 +78,6 @@ jobs:
             echo "New commits detected, building."
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ====================================================
   # Job 1: 核心构建
