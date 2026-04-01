@@ -1,0 +1,450 @@
+name: Nightly Build
+
+on:
+  schedule:
+    # 每天 UTC 02:00 (北京时间 10:00)
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Source ref in Java-Chains/chains (branch/tag/commit). Defaults to main"
+        required: false
+        type: string
+        default: 'main'
+      skip_docker:
+        description: "Skip Docker build"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  # ====================================================
+  # Job 0: 检查是否有新提交（定时触发时跳过无变更的构建）
+  # ====================================================
+  check_changes:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      source_sha: ${{ steps.check.outputs.source_sha }}
+      short_sha: ${{ steps.check.outputs.short_sha }}
+      nightly_version: ${{ steps.check.outputs.nightly_version }}
+    steps:
+      - name: Check for Recent Changes
+        id: check
+        env:
+          DEPENDENCY_REPO_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
+        run: |
+          SOURCE_REF="${{ inputs.source_ref || 'main' }}"
+
+          # 获取最新 commit SHA
+          SOURCE_SHA=$(git ls-remote "https://x-access-token:${DEPENDENCY_REPO_TOKEN}@github.com/Java-Chains/chains.git" "$SOURCE_REF" | head -1 | cut -f1)
+          if [ -z "$SOURCE_SHA" ]; then
+            echo "Cannot resolve ref: $SOURCE_REF"
+            exit 1
+          fi
+
+          SHORT_SHA="${SOURCE_SHA:0:7}"
+          NIGHTLY_VERSION="nightly-$(date -u +%Y%m%d)-${SHORT_SHA}"
+
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "nightly_version=$NIGHTLY_VERSION" >> "$GITHUB_OUTPUT"
+
+          # workflow_dispatch 总是构建
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # schedule 模式：检查最近 24h 是否有新提交
+          LAST_NIGHTLY_SHA=""
+          RELEASE_JSON=$(gh release view nightly --repo "$GITHUB_REPOSITORY" --json body 2>/dev/null || true)
+          if [ -n "$RELEASE_JSON" ]; then
+            LAST_NIGHTLY_SHA=$(echo "$RELEASE_JSON" | jq -r '.body' | grep -oP 'Source commit: \K[0-9a-f]+' || true)
+          fi
+
+          if [ "$SOURCE_SHA" = "$LAST_NIGHTLY_SHA" ]; then
+            echo "No new commits since last nightly build, skipping."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New commits detected, building."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ====================================================
+  # Job 1: 核心构建
+  # ====================================================
+  build:
+    needs: check_changes
+    if: needs.check_changes.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      JAVA_VERSION: '8'
+      NODE_VERSION: '23.2.0'
+      PNPM_VERSION: '9.13.2'
+      GO_VERSION: '1.20.14'
+
+    steps:
+      - name: Checkout Release Repo
+        uses: actions/checkout@v4
+
+      - name: Read Release Manifest
+        id: manifest
+        shell: bash
+        run: |
+          ruby <<'RUBY'
+          require 'yaml'
+
+          manifest = YAML.safe_load(File.read('.github/release-manifest.yml'), aliases: false)
+          dependencies = manifest.fetch('dependencies')
+          required = %w[
+            chains_dev_jars
+            java_echo_generator
+            java_memshell_generator
+            chains_config
+          ]
+
+          File.open(ENV.fetch('GITHUB_OUTPUT'), 'a') do |out|
+            required.each do |name|
+              entry = dependencies[name] || abort("Missing dependency entry: #{name}")
+              repository = entry['repository'].to_s.strip
+              ref = entry['ref'].to_s.strip
+
+              abort("Missing repository for #{name}") if repository.empty?
+              abort("Missing ref for #{name}") if ref.empty?
+
+              out.puts "#{name}_repository=#{repository}"
+              out.puts "#{name}_ref=#{ref}"
+            end
+          end
+          RUBY
+
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          repository: Java-Chains/chains
+          ref: ${{ inputs.source_ref || 'main' }}
+          token: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
+          fetch-depth: 1
+          path: source
+
+      - name: Clone Pinned Dependency Repositories
+        env:
+          DEPENDENCY_REPO_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
+        run: |
+          mkdir -p release-deps
+
+          clone_repo() {
+            local repository="$1"
+            local directory="$2"
+            local ref="$3"
+            local url="https://x-access-token:${DEPENDENCY_REPO_TOKEN}@github.com/${repository}.git"
+
+            echo "Cloning ${repository} @ ${ref}"
+            git clone --depth 1 "$url" "$directory"
+            git -C "$directory" checkout "$ref"
+            echo "Resolved $(git -C "$directory" rev-parse HEAD) for ${repository}"
+          }
+
+          clone_repo "${{ steps.manifest.outputs.chains_dev_jars_repository }}" "release-deps/chains-dev-jars" "${{ steps.manifest.outputs.chains_dev_jars_ref }}"
+          clone_repo "${{ steps.manifest.outputs.java_echo_generator_repository }}" "release-deps/java-echo-generator" "${{ steps.manifest.outputs.java_echo_generator_ref }}"
+          clone_repo "${{ steps.manifest.outputs.java_memshell_generator_repository }}" "release-deps/java-memshell-generator" "${{ steps.manifest.outputs.java_memshell_generator_ref }}"
+          clone_repo "${{ steps.manifest.outputs.chains_config_repository }}" "release-deps/chains-config" "${{ steps.manifest.outputs.chains_config_ref }}"
+
+      - name: Set up Temurin JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: 'maven'
+
+      - name: Set up Maven
+        uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: 3.9.6
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-nightly-${{ hashFiles('source/**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-nightly-
+            ${{ runner.os }}-maven-
+
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: source/mcp-go/go.sum
+
+      - name: Install Dev Jars
+        run: |
+          cd release-deps/chains-dev-jars
+          bash mvn_install.sh
+
+      - name: Build and Install Generators
+        run: |
+          cd release-deps/java-echo-generator
+          mvn clean install -DskipTests
+
+          cd ../../release-deps/java-memshell-generator
+          mvn clean install -DskipTests
+
+      - name: Set up Node.js & pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Build Frontend
+        run: |
+          cd source/frontend
+          pnpm install
+          pnpm build
+
+          mkdir -p ../java-chains/src/main/resources/static
+          rm -rf ../java-chains/src/main/resources/static/*
+          cp -r dist/* ../java-chains/src/main/resources/static/
+
+      - name: Build Backend (Server & CLI)
+        run: |
+          cd source
+          mvn clean install -DskipTests -Dmaven.compiler.source=1.8 -Dmaven.compiler.target=1.8
+
+      - name: Build MCP Binaries
+        run: |
+          mkdir -p release_base/mcp-binaries
+          cd source/mcp-go
+
+          build_mcp() {
+            local goos="$1"
+            local goarch="$2"
+            local output="$3"
+            echo "Building ${output} ..."
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags="-s -w" -o "../../release_base/mcp-binaries/${output}" ./cmd/mcp-go
+          }
+
+          build_mcp linux amd64 java-chains-mcp-linux-amd64
+          build_mcp linux arm64 java-chains-mcp-linux-arm64
+          build_mcp windows amd64 java-chains-mcp-windows-amd64.exe
+          build_mcp windows arm64 java-chains-mcp-windows-arm64.exe
+          build_mcp darwin amd64 java-chains-mcp-macos-amd64
+          build_mcp darwin arm64 java-chains-mcp-macos-arm64
+
+      - name: Prepare Base Artifacts
+        run: |
+          SERVER_JAR=$(find source -maxdepth 1 -type f -name "java-chains-*-exec.jar" | sort | head -n 1)
+          if [ -z "$SERVER_JAR" ]; then
+            SERVER_JAR=$(find source -maxdepth 1 -type f -name "java-chains-*.jar" \
+              ! -name "*-sources.jar" \
+              ! -name "*-javadoc.jar" \
+              ! -name "*.original" | sort | head -n 1)
+          fi
+
+          if [ -f "$SERVER_JAR" ]; then
+            echo "Found Server Jar: $(basename "$SERVER_JAR")"
+            cp "$SERVER_JAR" release_base/java-chains.jar
+          else
+            echo "Error: java-chains jar not found"
+            exit 1
+          fi
+
+          CLI_JAR=$(find source/cli-chains/target -type f -name "cli-chains-*-jar-with-dependencies.jar" | sort | head -n 1)
+          if [ -z "$CLI_JAR" ]; then
+            CLI_JAR=$(find source -maxdepth 1 -type f -name "cli-chains-*-jar-with-dependencies.jar" | sort | head -n 1)
+          fi
+
+          if [ -f "$CLI_JAR" ]; then
+            echo "Found CLI Jar: $(basename "$CLI_JAR")"
+            cp "$CLI_JAR" release_base/cli-chains.jar
+          else
+            echo "Warning: cli-chains jar not found, skipping"
+          fi
+
+          cp -r release-deps/chains-config release_base/chains-config
+          rm -rf release_base/chains-config/.git
+
+          if [ -d source/chains-config/mcp ]; then
+            mkdir -p release_base/chains-config/mcp
+            cp -r source/chains-config/mcp/. release_base/chains-config/mcp/
+          fi
+
+      - name: Purge
+        if: always()
+        run: |
+          rm -rf source release-deps
+          rm -rf ~/.m2/repository
+
+          echo "=== Artifact integrity check ==="
+          if find release_base -type f \( \
+            -name "*.java" -o -name "*.go" -o -name "*.ts" -o -name "*.tsx" \
+            -o -name "*.vue" -o -name "*.jsx" -o -name "*.py" \
+            -o -name "*-sources.jar" -o -name "*-javadoc.jar" \
+            -o -name ".git" -o -name ".gitignore" \
+            -o -name "pom.xml" -o -name "package.json" -o -name "go.mod" \
+          \) | grep -q .; then
+            echo "ERROR: detected in release artifacts!"
+            find release_base -type f \( \
+              -name "*.java" -o -name "*.go" -o -name "*.ts" -o -name "*.tsx" \
+              -o -name "*.vue" -o -name "*.jsx" -o -name "*.py" \
+              -o -name "*-sources.jar" -o -name "*-javadoc.jar" \
+              -o -name ".git" -o -name ".gitignore" \
+              -o -name "pom.xml" -o -name "package.json" -o -name "go.mod" \
+            \)
+            exit 1
+          fi
+
+          # 递归清除残留的 .git 目录
+          find release_base -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
+
+          echo "Artifact contents:"
+          find release_base -type f | sort
+          echo "=== All clean ==="
+
+      - name: Upload Base Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-artifacts
+          path: release_base/
+          retention-days: 3
+
+  # ====================================================
+  # Job 2: 更新 Nightly Release
+  # ====================================================
+  publish_nightly:
+    needs: [check_changes, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-artifacts
+          path: base
+
+      - name: Package Nightly Artifacts
+        run: |
+          NIGHTLY_VERSION="${{ needs.check_changes.outputs.nightly_version }}"
+
+          # 通用包 (server + config)
+          tar -czf "java-chains-${NIGHTLY_VERSION}.tar.gz" -C base java-chains.jar chains-config
+
+          # MCP 全平台包
+          tar -czf "java-chains-mcp-${NIGHTLY_VERSION}-binaries.tar.gz" -C base mcp-binaries
+
+          # CLI 包 (如果存在)
+          if [ -f base/cli-chains.jar ]; then
+            mkdir -p cli_dist
+            cp base/cli-chains.jar cli_dist/
+            cp -r base/chains-config cli_dist/
+            tar -czf "cli-chains-${NIGHTLY_VERSION}.tar.gz" -C cli_dist .
+          fi
+
+      - name: Update Nightly Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NIGHTLY_VERSION="${{ needs.check_changes.outputs.nightly_version }}"
+          SOURCE_SHA="${{ needs.check_changes.outputs.source_sha }}"
+          SHORT_SHA="${{ needs.check_changes.outputs.short_sha }}"
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+
+          # 删除旧的 nightly release（如果存在）
+          gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+          git push --delete origin nightly 2>/dev/null || true
+
+          BODY=$(cat <<EOF
+          ## Nightly Build — ${BUILD_DATE}
+
+          > **This is an automated nightly build and may be unstable.**
+
+          | Key | Value |
+          |-----|-------|
+          | Source ref | main |
+          | Source commit | ${SOURCE_SHA} |
+          | Build version | ${NIGHTLY_VERSION} |
+          | Build date | ${BUILD_DATE} |
+
+          ### Artifacts
+          - \`java-chains-${NIGHTLY_VERSION}.tar.gz\` — Server + Config
+          - \`java-chains-mcp-${NIGHTLY_VERSION}-binaries.tar.gz\` — MCP Binaries (all platforms)
+          - \`cli-chains-${NIGHTLY_VERSION}.tar.gz\` — CLI Tool
+          EOF
+          )
+
+          ASSETS=()
+          for f in *.tar.gz; do
+            [ -f "$f" ] && ASSETS+=("$f")
+          done
+
+          gh release create nightly \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Nightly Build (${BUILD_DATE})" \
+            --notes "$BODY" \
+            --prerelease \
+            "${ASSETS[@]}"
+
+  # ====================================================
+  # Job 3: Nightly Docker Build
+  # ====================================================
+  docker_nightly:
+    needs: [check_changes, build]
+    if: ${{ inputs.skip_docker != true }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: Dockerfile
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-artifacts
+          path: docker-context
+
+      - name: Prepare Docker Context (no source code)
+        run: |
+          rm -f docker-context/cli-chains.jar
+
+          # 只保留 Dockerfile 需要的文件
+          cp Dockerfile docker-context/
+
+          test -f docker-context/java-chains.jar
+          test -d docker-context/mcp-binaries
+          test -d docker-context/chains-config
+          test -f docker-context/mcp-binaries/java-chains-mcp-linux-amd64
+          test -f docker-context/mcp-binaries/java-chains-mcp-linux-arm64
+
+          echo "Docker context contents:"
+          find docker-context -type f | sort
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          file: docker-context/Dockerfile
+          context: docker-context
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            javachains/javachains:nightly
+            javachains/javachains:nightly-${{ needs.check_changes.outputs.short_sha }}

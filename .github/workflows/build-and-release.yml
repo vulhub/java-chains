@@ -25,6 +25,8 @@ jobs:
       release_version: ${{ steps.meta.outputs.release_version }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
       source_ref: ${{ steps.meta.outputs.source_ref }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      docker_tags: ${{ steps.meta.outputs.docker_tags }}
       chains_dev_jars_repository: ${{ steps.manifest.outputs.chains_dev_jars_repository }}
       chains_dev_jars_ref: ${{ steps.manifest.outputs.chains_dev_jars_ref }}
       java_echo_generator_repository: ${{ steps.manifest.outputs.java_echo_generator_repository }}
@@ -54,10 +56,24 @@ jobs:
           if [ -z "$SOURCE_REF" ]; then
             SOURCE_REF="$RELEASE_TAG"
           fi
+          if [[ "$VERSION" == *-* ]]; then
+            IS_PRERELEASE="true"
+          else
+            IS_PRERELEASE="false"
+          fi
 
           echo "release_version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          {
+            echo "docker_tags<<EOF"
+            echo "javachains/javachains:${VERSION}"
+            if [ "$IS_PRERELEASE" != "true" ]; then
+              echo "javachains/javachains:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Read Release Manifest
         id: manifest
@@ -254,12 +270,12 @@ jobs:
               go build -trimpath -ldflags="-s -w" -o "../release_base/mcp-binaries/${output}" ./cmd/mcp-go
           }
 
-          build_mcp linux amd64 mcp-go-linux-amd64
-          build_mcp linux arm64 mcp-go-linux-aarch64
-          build_mcp windows amd64 mcp-go-windows-amd64.exe
-          build_mcp windows arm64 mcp-go-windows-arm64.exe
-          build_mcp darwin amd64 mcp-go-macos-amd64
-          build_mcp darwin arm64 mcp-go-macos-aarch64
+          build_mcp linux amd64 java-chains-mcp-linux-amd64
+          build_mcp linux arm64 java-chains-mcp-linux-arm64
+          build_mcp windows amd64 java-chains-mcp-windows-amd64.exe
+          build_mcp windows arm64 java-chains-mcp-windows-arm64.exe
+          build_mcp darwin amd64 java-chains-mcp-macos-amd64
+          build_mcp darwin arm64 java-chains-mcp-macos-arm64
 
       - name: Prepare Base Artifacts
         run: |
@@ -275,11 +291,10 @@ jobs:
           fi
 
           if [ -f "$SERVER_JAR" ]; then
-            echo "Found Server Jar: $SERVER_JAR"
+            echo "Found Server Jar: $(basename "$SERVER_JAR")"
             cp "$SERVER_JAR" release_base/java-chains.jar
           else
             echo "Error: java-chains jar not found in root directory"
-            ls -la
             exit 1
           fi
 
@@ -290,11 +305,10 @@ jobs:
           fi
 
           if [ -f "$CLI_JAR" ]; then
-            echo "Found CLI Jar: $CLI_JAR"
+            echo "Found CLI Jar: $(basename "$CLI_JAR")"
             cp "$CLI_JAR" release_base/cli-chains.jar
           else
             echo "Error: cli-chains jar not found"
-            find cli-chains -maxdepth 3 -type f | sort
             exit 1
           fi
 
@@ -306,6 +320,37 @@ jobs:
             mkdir -p release_base/chains-config/mcp
             cp -r chains-config/mcp/. release_base/chains-config/mcp/
           fi
+
+      # ── 源码防泄漏：销毁所有源码，确保 artifact 只含编译产物 ──
+      - name: Purge Source Code
+        if: always()
+        run: |
+          rm -rf release-deps
+          rm -rf ~/.m2/repository
+
+          # 确认 release_base 中没有源码文件
+          if find release_base -type f \( \
+            -name "*.java" -o -name "*.go" -o -name "*.ts" -o -name "*.tsx" \
+            -o -name "*.vue" -o -name "*.jsx" -o -name "*.py" \
+            -o -name "*-sources.jar" -o -name "*-javadoc.jar" \
+            -o -name ".git" -o -name ".gitignore" \
+            -o -name "pom.xml" -o -name "package.json" -o -name "go.mod" \
+          \) | grep -q .; then
+            echo "ERROR: Source code files detected in release artifacts!"
+            find release_base -type f \( \
+              -name "*.java" -o -name "*.go" -o -name "*.ts" -o -name "*.tsx" \
+              -o -name "*.vue" -o -name "*.jsx" -o -name "*.py" \
+              -o -name "*-sources.jar" -o -name "*-javadoc.jar" \
+              -o -name ".git" -o -name ".gitignore" \
+              -o -name "pom.xml" -o -name "package.json" -o -name "go.mod" \
+            \)
+            exit 1
+          fi
+
+          find release_base -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
+
+          echo "Artifact contents:"
+          find release_base -type f | sort
 
       - name: Upload Base Artifacts
         uses: actions/upload-artifact@v4
@@ -330,6 +375,7 @@ jobs:
           RELEASE_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
           SOURCE_REF="${{ needs.resolve_release_meta.outputs.source_ref }}"
           SOURCE_SHA="${{ needs.build.outputs.source_sha }}"
+          IS_PRERELEASE="${{ needs.resolve_release_meta.outputs.is_prerelease }}"
 
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists, skip creation."
@@ -344,11 +390,19 @@ jobs:
           Source commit: ${SOURCE_SHA}
           EOF
 
-          gh release create "$RELEASE_TAG" \
-            --draft \
-            --title "Release $RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
+          ARGS=(
+            "$RELEASE_TAG"
+            --draft
+            --title "Release $RELEASE_TAG"
+            --repo "$GITHUB_REPOSITORY"
             --notes-file release-notes.txt
+          )
+
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            ARGS+=(--prerelease)
+          fi
+
+          gh release create "${ARGS[@]}"
 
   # ====================================================
   # Job 3: 矩阵打包 (主程序 + 对应平台 MCP)
@@ -364,38 +418,38 @@ jobs:
             arch_api: x64
             suffix: linux-amd64
             ext: tar.gz
-            mcp_binary: mcp-go-linux-amd64
-            mcp_target: mcp-go
+            mcp_binary: java-chains-mcp-linux-amd64
+            mcp_target: java-chains-mcp
           - os_api: linux
             arch_api: aarch64
             suffix: linux-aarch64
             ext: tar.gz
-            mcp_binary: mcp-go-linux-aarch64
-            mcp_target: mcp-go
+            mcp_binary: java-chains-mcp-linux-arm64
+            mcp_target: java-chains-mcp
           - os_api: windows
             arch_api: x64
             suffix: windows-amd64
             ext: zip
-            mcp_binary: mcp-go-windows-amd64.exe
-            mcp_target: mcp-go.exe
+            mcp_binary: java-chains-mcp-windows-amd64.exe
+            mcp_target: java-chains-mcp.exe
           - os_api: windows
             arch_api: arm64
             suffix: windows-arm64
             ext: zip
-            mcp_binary: mcp-go-windows-arm64.exe
-            mcp_target: mcp-go.exe
+            mcp_binary: java-chains-mcp-windows-arm64.exe
+            mcp_target: java-chains-mcp.exe
           - os_api: mac
             arch_api: x64
             suffix: macos-intel
             ext: tar.gz
-            mcp_binary: mcp-go-macos-amd64
-            mcp_target: mcp-go
+            mcp_binary: java-chains-mcp-macos-amd64
+            mcp_target: java-chains-mcp
           - os_api: mac
             arch_api: aarch64
             suffix: macos-m-series
             ext: tar.gz
-            mcp_binary: mcp-go-macos-aarch64
-            mcp_target: mcp-go
+            mcp_binary: java-chains-mcp-macos-arm64
+            mcp_target: java-chains-mcp
 
     steps:
       - uses: actions/download-artifact@v4
@@ -467,7 +521,7 @@ jobs:
 
             echo '#!/bin/bash' > start-mcp.sh
             echo 'BASE_DIR=$(cd "$(dirname "$0")" && pwd)' >> start-mcp.sh
-            echo 'exec "$BASE_DIR/mcp-go" "$@"' >> start-mcp.sh
+            echo 'exec "$BASE_DIR/java-chains-mcp" "$@"' >> start-mcp.sh
             chmod +x start-mcp.sh
           else
             echo '@echo off' > start.bat
@@ -477,7 +531,7 @@ jobs:
 
             echo '@echo off' > start-mcp.bat
             echo 'set "BASE_DIR=%~dp0"' >> start-mcp.bat
-            echo '"%BASE_DIR%mcp-go.exe" %*' >> start-mcp.bat
+            echo '"%BASE_DIR%java-chains-mcp.exe" %*' >> start-mcp.bat
           fi
 
       - name: Compress and Upload
@@ -517,8 +571,8 @@ jobs:
           tar -czvf "java-chains-${RELEASE_VERSION}.tar.gz" java-chains.jar chains-config
           gh release upload "$RELEASE_TAG" "java-chains-${RELEASE_VERSION}.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
 
-          tar -czvf "mcp-go-${RELEASE_VERSION}-binaries.tar.gz" mcp-binaries
-          gh release upload "$RELEASE_TAG" "mcp-go-${RELEASE_VERSION}-binaries.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
+          tar -czvf "java-chains-mcp-${RELEASE_VERSION}-binaries.tar.gz" mcp-binaries
+          gh release upload "$RELEASE_TAG" "java-chains-mcp-${RELEASE_VERSION}-binaries.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
 
           mkdir cli_dist
           cp cli-chains.jar cli_dist/
@@ -540,10 +594,16 @@ jobs:
           name: base-artifacts
           path: .
 
-      - name: Clean up release extras for Docker context
+      - name: Prepare Docker MCP binary names
         run: |
           rm -f cli-chains.jar
-          rm -rf mcp-binaries
+
+      - name: Verify Docker MCP Binaries
+        run: |
+          test -d mcp-binaries
+          test -f mcp-binaries/java-chains-mcp-linux-amd64
+          test -f mcp-binaries/java-chains-mcp-linux-arm64
+          ls -la mcp-binaries
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -558,6 +618,4 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            javachains/javachains:${{ needs.resolve_release_meta.outputs.release_version }}
-            javachains/javachains:latest
+          tags: ${{ needs.resolve_release_meta.outputs.docker_tags }}
