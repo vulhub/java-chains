@@ -312,6 +312,17 @@ jobs:
             exit 1
           fi
 
+          # 2.5 复制 SDK jar
+          SDK_JAR=$(find chains-sdk/target -maxdepth 1 -type f -name "chains-sdk-*.jar" \
+            ! -name "*-sources.jar" ! -name "*-javadoc.jar" ! -name "*.original" | sort | head -n 1)
+          if [ -f "$SDK_JAR" ]; then
+            echo "Found SDK Jar: $(basename "$SDK_JAR")"
+            cp "$SDK_JAR" release_base/java-chains-sdk.jar
+          else
+            echo "Error: chains-sdk jar not found"
+            exit 1
+          fi
+
           # 3. 复制配置，并覆盖 v2.0 新增的 MCP 配置目录
           cp -r release-deps/chains-config release_base/chains-config
           rm -rf release_base/chains-config/.git
@@ -580,6 +591,9 @@ jobs:
           tar -czvf "cli-chains-${RELEASE_VERSION}.tar.gz" -C cli_dist .
           gh release upload "$RELEASE_TAG" "cli-chains-${RELEASE_VERSION}.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
 
+          cp java-chains-sdk.jar "java-chains-sdk-${RELEASE_VERSION}.jar"
+          gh release upload "$RELEASE_TAG" "java-chains-sdk-${RELEASE_VERSION}.jar" --clobber --repo "$GITHUB_REPOSITORY"
+
   # ====================================================
   # Job 5: Docker Build
   # ====================================================
@@ -596,7 +610,7 @@ jobs:
 
       - name: Prepare Docker MCP binary names
         run: |
-          rm -f cli-chains.jar
+          rm -f cli-chains.jar java-chains-sdk.jar
 
       - name: Verify Docker MCP Binaries
         run: |

@@ -68,10 +68,12 @@ jobs:
           LAST_NIGHTLY_SHA=""
           RELEASE_JSON=$(gh release view nightly --repo "$GITHUB_REPOSITORY" --json body 2>/dev/null || true)
           if [ -n "$RELEASE_JSON" ]; then
-            LAST_NIGHTLY_SHA=$(echo "$RELEASE_JSON" | jq -r '.body' | grep -oP 'Source commit: \K[0-9a-f]+' || true)
+            LAST_NIGHTLY_SHA=$(echo "$RELEASE_JSON" | jq -r '.body' | grep -oP 'Source commit\s*[:|]\s*\K[0-9a-f]{7,40}' | head -1 || true)
           fi
+          echo "Last nightly SHA: ${LAST_NIGHTLY_SHA:-<none>}"
+          echo "Current source SHA: $SOURCE_SHA"
 
-          if [ "$SOURCE_SHA" = "$LAST_NIGHTLY_SHA" ]; then
+          if [ -n "$LAST_NIGHTLY_SHA" ] && [ "$SOURCE_SHA" = "$LAST_NIGHTLY_SHA" ]; then
             echo "No new commits since last nightly build, skipping."
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
@@ -149,8 +151,10 @@ jobs:
             local url="https://x-access-token:${DEPENDENCY_REPO_TOKEN}@github.com/${repository}.git"
 
             echo "Cloning ${repository} @ ${ref}"
-            git clone --depth 1 "$url" "$directory"
-            git -C "$directory" checkout "$ref"
+            git init "$directory"
+            git -C "$directory" remote add origin "$url"
+            git -C "$directory" fetch --depth 1 origin "$ref"
+            git -C "$directory" checkout FETCH_HEAD
             echo "Resolved $(git -C "$directory" rev-parse HEAD) for ${repository}"
           }
 
@@ -274,6 +278,16 @@ jobs:
             echo "Warning: cli-chains jar not found, skipping"
           fi
 
+          SDK_JAR=$(find source/chains-sdk/target -maxdepth 1 -type f -name "chains-sdk-*.jar" \
+            ! -name "*-sources.jar" ! -name "*-javadoc.jar" ! -name "*.original" | sort | head -n 1)
+          if [ -f "$SDK_JAR" ]; then
+            echo "Found SDK Jar: $(basename "$SDK_JAR")"
+            cp "$SDK_JAR" release_base/java-chains-sdk.jar
+          else
+            echo "Error: chains-sdk jar not found"
+            exit 1
+          fi
+
           cp -r release-deps/chains-config release_base/chains-config
           rm -rf release_base/chains-config/.git
 
@@ -345,6 +359,11 @@ jobs:
           # MCP 全平台包
           tar -czf "java-chains-mcp-${NIGHTLY_VERSION}-binaries.tar.gz" -C base mcp-binaries
 
+          # SDK jar (单独发布)
+          if [ -f base/java-chains-sdk.jar ]; then
+            cp base/java-chains-sdk.jar "java-chains-sdk-${NIGHTLY_VERSION}.jar"
+          fi
+
           # CLI 包 (如果存在)
           if [ -f base/cli-chains.jar ]; then
             mkdir -p cli_dist
@@ -382,11 +401,12 @@ jobs:
           - \`java-chains-${NIGHTLY_VERSION}.tar.gz\` — Server + Config
           - \`java-chains-mcp-${NIGHTLY_VERSION}-binaries.tar.gz\` — MCP Binaries (all platforms)
           - \`cli-chains-${NIGHTLY_VERSION}.tar.gz\` — CLI Tool
+          - \`java-chains-sdk-${NIGHTLY_VERSION}.jar\` — SDK Library
           EOF
           )
 
           ASSETS=()
-          for f in *.tar.gz; do
+          for f in *.tar.gz java-chains-sdk-*.jar; do
             [ -f "$f" ] && ASSETS+=("$f")
           done
 
@@ -418,6 +438,7 @@ jobs:
       - name: Prepare Docker Context (no source code)
         run: |
           rm -f docker-context/cli-chains.jar
+          rm -f docker-context/java-chains-sdk.jar
 
           # 只保留 Dockerfile 需要的文件
           cp Dockerfile docker-context/
