@@ -27,13 +27,16 @@ Docs: https://java-chains.github.io/en/docs/guide
 ### Docker Compose
 
 ```bash
-# optional: place chains-config from the release tarball next to docker-compose.yml
+# recommended: place chains-config from the release tarball next to docker-compose.yml
+# (an empty ./chains-config mount still starts, but hides image-baked config/plugins)
 docker compose up -d
 # startup banner prints credentials on the "Auth" line
 docker logs -f java-chains | grep -i auth
 ```
 
 Open `http://your-ip:8011`
+
+**FakeMySQL read files:** `FakeMySQLReadPayload` asks the **victim JDBC client** to send a path (e.g. `/etc/passwd` on the victim). Chains does **not** open that path inside the container. Captured bytes are written under `chains-config/cache/fake-server-files/` (browse in Studio → FakeMySQL Files). The image entrypoint ensures that cache dir is writable by the non-root `appuser` even when the bind mount was created as root.
 
 ### Docker run
 

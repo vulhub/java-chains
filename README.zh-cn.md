@@ -27,13 +27,16 @@
 ### Docker Compose
 
 ```bash
-# 可选：把 release 包里的 chains-config 放到本目录旁（与 docker-compose.yml 同级）
+# 推荐：把 release 包里的 chains-config 放到本目录旁（与 docker-compose.yml 同级）
+# （空的 ./chains-config 挂载仍可启动，但会遮住镜像内置的配置/插件）
 docker compose up -d
 # 启动横幅里账号密码在 "Auth" 行
 docker logs -f java-chains | grep -i auth
 ```
 
 打开 `http://your-ip:8011`
+
+**FakeMySQL 读文件：** `FakeMySQLReadPayload` 让**受害端 JDBC 客户端**去读你配置的路径（例如受害者机器上的 `/etc/passwd`），**不是**在容器内打开该路径。读回内容落在 `chains-config/cache/fake-server-files/`（Studio → FakeMySQL 文件）。镜像 entrypoint 会保证非 root 的 `appuser` 即使在 root 创建的 bind mount 下也能写入该缓存目录。
 
 ### Docker run
 

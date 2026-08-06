@@ -21,8 +21,19 @@ services:
       # 可选：启动时查询公网 IP（会访问第三方 IP 回显服务）
       CHAINS_SHOW_PUBLIC_IP: ${CHAINS_SHOW_PUBLIC_IP:-false}
     volumes:
-      # 持久化配置 / 插件 / third-libs / presets
+      # Persist config / plugins / presets / FakeMySQL captures.
+      # Prefer copying chains-config from the release tarball next to this file.
+      # An empty host dir still works for writes (entrypoint chowns it for appuser),
+      # but hides the image's baked-in chains-config — copy from the tarball for plugins.
       - ./chains-config:/chains/chains-config
+      # Optional: mount a host path you want available *inside* the container for
+      # other tooling. FakeMySQLReadPayload does NOT read host/container files itself —
+      # the victim JDBC client reads the path you configure (e.g. /etc/passwd on the victim).
+      # Captures land in chains-config/cache/fake-server-files/.
+      # - /path/on/host:/chains/host-files:ro
+    # Optional: run as a specific host UID/GID instead of image appuser.
+    # Entrypoint skips chown when not root; ensure the volume is writable by that user.
+    # user: "1000:1000"
     networks:
       - java-chains-net
 
