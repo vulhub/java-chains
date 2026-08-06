@@ -12,10 +12,7 @@
 </div>
 </div>
 
-`Java-Chains` is a Java Payload generation and vulnerability exploitation web platform, designed to facilitate security
-researchers in quickly generating Java Payloads and conveniently and rapidly testing vulnerabilities such as JNDI
-injection, MySQL JDBC deserialization, and JRMP deserialization. It aims to improve testing efficiency to a certain
-extent.
+`Java-Chains` is a Java payload generation and exploitation web platform for security researchers. It helps you build Java payloads quickly and test scenarios such as JNDI injection, MySQL JDBC deserialization, and JRMP deserialization.
 
 > Standing on the shoulders of giants
 
@@ -23,20 +20,85 @@ extent.
   <img src="./img/main.png" />
 </p>
 
-## Get started quickly
+## v2.0 Beta highlights
 
-https://java-chains.vulhub.org/docs/guide
+- **Studio workbench** — default sample chain, fuzzy gadget search, shareable chain URL
+- **Canonical `/api`** — session + scoped API token (`X-Api-Token`)
+- **Product CLI** — `java-chains-cli` for remote orchestration and offline pure generate
+- **BuiltIn Exploits** — optional exploit workbench modules packaged by default
+- **Docker / Compose** — `javachains/javachains:2.0.0-beta3` (no bundled MCP binary)
 
-## Updated content
+## Quick start
+
+Docs: https://java-chains.github.io/en/docs/guide
+
+### Docker Compose
+
+```bash
+# optional: copy chains-config from the release tarball beside this file
+docker compose up -d
+docker logs -f java-chains | grep -i password
+```
+
+Open `http://your-ip:8011`
+
+### Docker run
+
+```bash
+docker run -d \
+  --name java-chains \
+  --restart=unless-stopped \
+  -p 8011:8011 \
+  -p 58080:58080 -p 50389:50389 -p 50388:50388 \
+  -p 3308:3308 -p 13999:13999 -p 50000:50000 -p 11527:11527 \
+  -e CHAINS_AUTH=true \
+  -e CHAINS_PASS= \
+  javachains/javachains:2.0.0-beta3
+```
+
+### Jar
+
+Requires **OpenJDK / Temurin / Zulu JDK 8** (Oracle JDK 8 is not recommended for BCEL chains).
+
+```bash
+tar -xzf java-chains-2.0.0-beta3.tar.gz
+cd java-chains-2.0.0-beta3   # or unpack layout with java-chains.jar + chains-config/
+java -jar java-chains.jar
+```
+
+### CLI (optional)
+
+```bash
+# remote pure generate against a running server
+export CHAINS_API_TOKEN=...
+java -jar java-chains-cli.jar generate \
+  --execution remote --server http://127.0.0.1:8011 --token-env CHAINS_API_TOKEN \
+  --payload JavaNativePayload --chain CommonsBeanutils1 --arg cmd=id --encode base64 --json
+
+# offline local pure generate (fat jar only)
+java -jar java-chains-cli.jar generate --execution local \
+  --payload JavaNativePayload --chain CommonsBeanutils1 --arg cmd=id --encode base64 --json
+```
+
+## Release artifacts (v2)
+
+| Artifact | Contents |
+|---|---|
+| `java-chains-<ver>.tar.gz` | Server fat jar (SPA embedded) + `chains-config` |
+| `java-chains-<ver>-<platform>.*` | Same + bundled JDK 8 |
+| `java-chains-cli-<ver>.tar.gz` | Product CLI fat jar (+ thin remote jar if built) + `chains-config` |
+| `java-chains-sdk-<ver>.jar` | Embeddable SDK |
+| Docker `javachains/javachains:<ver>` | Server image |
+
+## Changelog
 
 [CHANGELOG.md](./CHANGELOG.md)
 
 ## References and acknowledgments
 
-It only supports personal research and learning, and should never be used for illegal and criminal activities.
+For personal research and learning only. Never use for illegal activity.
 
-The developers, providers and maintainers of the project are not responsible for the actions and consequences of the
-user's use of the tool, and the user of the tool shall do so at their own risk.
+The developers, providers and maintainers are not responsible for actions or consequences of using this tool; users assume all risk.
 
 Acknowledgments:
 
@@ -62,7 +124,7 @@ Acknowledgments:
 
 ## Communication
 
-If you have any questions, please feel free to send issus
+If you have any questions, please open an issue.
 
 ## Star History
 

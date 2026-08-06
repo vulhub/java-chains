@@ -1,10 +1,12 @@
+# Product release CI (java-chains release repo; formerly web-chains).
+# Backend: Java-Chains/chains | SPA: in-tree java-chains-web-element (Vue Element Plus)
 name: Build and Release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version without leading v (e.g. 2.0.0-beta1)"
+        description: "Release version without leading v (e.g. 2.0.0-beta3)"
         required: true
         type: string
       source_ref:
@@ -47,7 +49,7 @@ jobs:
 
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid version: $VERSION_INPUT"
-            echo "Use SemVer, for example: 2.0.0 or 2.0.0-beta1"
+            echo "Use SemVer, for example: 2.0.0 or 2.0.0-beta3"
             exit 1
           fi
 
@@ -107,18 +109,16 @@ jobs:
           RUBY
 
   # ====================================================
-  # Job 1: 核心构建
+  # Job 1: 核心构建（适配 v2 模块与发行物）
   # ====================================================
   build:
     needs: resolve_release_meta
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.source_revision.outputs.source_sha }}
+      frontend_sha: ${{ steps.frontend.outputs.frontend_sha }}
     env:
       JAVA_VERSION: '8'
-      NODE_VERSION: '23.2.0'
-      PNPM_VERSION: '9.13.2'
-      GO_VERSION: '1.20.14'
 
     steps:
       - name: Checkout Code
@@ -129,11 +129,32 @@ jobs:
           token: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
           fetch-depth: 0
 
+      - name: Checkout Release Packaging Script
+        uses: actions/checkout@v4
+        with:
+          path: _release_ci
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+          clean: false
+
       - name: Capture Source Revision
         id: source_revision
         shell: bash
         run: |
           echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Element Frontend Revision
+        id: frontend
+        shell: bash
+        run: |
+          test -f java-chains-web-element/package.json
+          test -f java-chains-web-element/pnpm-lock.yaml
+          FRONTEND_SHA="$(git log -1 --format=%H -- java-chains-web-element)"
+          FRONTEND_CT="$(git log -1 --format=%ct -- java-chains-web-element)"
+          echo "frontend_sha=${FRONTEND_SHA}" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=${FRONTEND_CT}" >> "$GITHUB_ENV"
+          echo "Using in-tree java-chains-web-element @ ${FRONTEND_SHA}"
 
       - name: Validate Source Version
         shell: bash
@@ -198,19 +219,23 @@ jobs:
         with:
           maven-version: 3.9.6
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
       - name: Cache Maven dependencies
         uses: actions/cache@v4
         with:
           path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          key: ${{ runner.os }}-maven-v2-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
+            ${{ runner.os }}-maven-v2-
             ${{ runner.os }}-maven-
-
-      - name: Set up Go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: mcp-go/go.sum
 
       - name: Clone and Install Dev Jars
         run: |
@@ -231,105 +256,111 @@ jobs:
             mvn clean install -DskipTests
           )
 
-      - name: Set up Node.js & pnpm
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Build Frontend
+      - name: Build Ship Artifacts (Element SPA + CLI + SDK)
         run: |
-          (
-            cd frontend
-            pnpm install
-            pnpm build
-          )
+          # Product SPA = java-chains-web-element (pnpm build → generated-resources/static).
+          install -m 0755 _release_ci/.github/scripts/package-java-chains-web-element.sh \
+            scripts/frontend/package-java-chains-web-element.sh
 
-          mkdir -p java-chains/src/main/resources/static
-          rm -rf java-chains/src/main/resources/static/*
-          cp -r frontend/dist/* java-chains/src/main/resources/static/
+          # package-guard defaults to React source id; accept Element for releases.
+          sed -i 's/java-chains-web/java-chains-web-element/g' scripts/frontend/package-guard.sh
 
-      - name: Build Backend (Server & CLI)
-        run: |
-          mvn clean install -DskipTests -Dmaven.compiler.source=1.8 -Dmaven.compiler.target=1.8
+          mvn -pl java-chains-server -am clean package -DskipTests -Pfrontend,with-exploits \
+            -Dfrontend.working.directory="${PWD}/java-chains-web-element" \
+            -Dfrontend.package.script="${PWD}/scripts/frontend/package-java-chains-web-element.sh"
 
-      - name: Build MCP Binaries
-        run: |
-          mkdir -p release_base/mcp-binaries
-          cd mcp-go
-
-          build_mcp() {
-            local goos="$1"
-            local goarch="$2"
-            local output="$3"
-            echo "Building ${output} ..."
-            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-              go build -trimpath -ldflags="-s -w" -o "../release_base/mcp-binaries/${output}" ./cmd/mcp-go
-          }
-
-          build_mcp linux amd64 java-chains-mcp-linux-amd64
-          build_mcp linux arm64 java-chains-mcp-linux-arm64
-          build_mcp windows amd64 java-chains-mcp-windows-amd64.exe
-          build_mcp windows arm64 java-chains-mcp-windows-arm64.exe
-          build_mcp darwin amd64 java-chains-mcp-macos-amd64
-          build_mcp darwin arm64 java-chains-mcp-macos-arm64
+          mvn -pl java-chains-cli,java-chains-sdk -am package -DskipTests
 
       - name: Prepare Base Artifacts
         run: |
           mkdir -p release_base
+          VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
 
-          # 1. 复制主程序，v2.0 优先使用可执行 Spring Boot fat jar
-          SERVER_JAR=$(find . -maxdepth 1 -type f -name "java-chains-*-exec.jar" | sort | head -n 1)
-          if [ -z "$SERVER_JAR" ]; then
-            SERVER_JAR=$(find . -maxdepth 1 -type f -name "java-chains-*.jar" \
-              ! -name "*-sources.jar" \
-              ! -name "*-javadoc.jar" \
-              ! -name "*.original" | sort | head -n 1)
+          pick_first() {
+            local candidate
+            for candidate in "$@"; do
+              if [ -f "$candidate" ]; then
+                printf '%s\n' "$candidate"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          # 1. Server Spring Boot fat jar (SPA embedded). Publish as java-chains.jar.
+          SERVER_JAR="$(pick_first \
+            "java-chains-${VERSION}-exec.jar" \
+            "java-chains-server-${VERSION}-exec.jar" \
+            "java-chains-server/target/java-chains-server-${VERSION}-exec.jar" \
+            "java-chains-server/target/java-chains-${VERSION}-exec.jar" \
+          )" || true
+
+          if [ -z "${SERVER_JAR:-}" ]; then
+            SERVER_JAR="$(find . -maxdepth 2 -type f \( \
+              -name "java-chains-*-exec.jar" -o -name "java-chains-server-*-exec.jar" \
+            \) ! -name "*-sources.jar" ! -name "*-javadoc.jar" | sort | head -n 1 || true)"
           fi
 
-          if [ -f "$SERVER_JAR" ]; then
-            echo "Found Server Jar: $(basename "$SERVER_JAR")"
+          if [ -f "${SERVER_JAR:-}" ]; then
+            echo "Found Server Jar: ${SERVER_JAR}"
             cp "$SERVER_JAR" release_base/java-chains.jar
           else
-            echo "Error: java-chains jar not found in root directory"
+            echo "Error: java-chains server exec jar not found"
+            find . -maxdepth 3 -type f -name "*.jar" | sort | head -n 80
             exit 1
           fi
 
-          # 2. 复制 CLI 工具，保留独立发布
-          CLI_JAR=$(find cli-chains/target -type f -name "cli-chains-*-jar-with-dependencies.jar" | sort | head -n 1)
-          if [ -z "$CLI_JAR" ]; then
-            CLI_JAR=$(find . -maxdepth 1 -type f -name "cli-chains-*-jar-with-dependencies.jar" | sort | head -n 1)
+          # 2. Product CLI fat jar (java-chains-cli). Keep a thin remote jar if present.
+          CLI_JAR="$(pick_first \
+            "java-chains-cli/target/java-chains-cli-${VERSION}-jar-with-dependencies.jar" \
+            "java-chains-cli/target/java-chains-cli-${VERSION}.jar" \
+          )" || true
+
+          if [ -z "${CLI_JAR:-}" ]; then
+            CLI_JAR="$(find java-chains-cli/target -type f -name "java-chains-cli-*-jar-with-dependencies.jar" 2>/dev/null | sort | head -n 1 || true)"
           fi
 
-          if [ -f "$CLI_JAR" ]; then
-            echo "Found CLI Jar: $(basename "$CLI_JAR")"
-            cp "$CLI_JAR" release_base/cli-chains.jar
+          if [ -f "${CLI_JAR:-}" ]; then
+            echo "Found CLI Jar: ${CLI_JAR}"
+            cp "$CLI_JAR" release_base/java-chains-cli.jar
           else
-            echo "Error: cli-chains jar not found"
+            echo "Error: java-chains-cli fat jar not found"
             exit 1
           fi
 
-          # 2.5 复制 SDK jar
-          SDK_JAR=$(find chains-sdk/target -maxdepth 1 -type f -name "chains-sdk-*.jar" \
-            ! -name "*-sources.jar" ! -name "*-javadoc.jar" ! -name "*.original" | sort | head -n 1)
-          if [ -f "$SDK_JAR" ]; then
-            echo "Found SDK Jar: $(basename "$SDK_JAR")"
+          CLI_REMOTE_JAR="$(pick_first \
+            "java-chains-cli-remote/target/java-chains-cli-remote-${VERSION}-jar-with-dependencies.jar" \
+            "java-chains-cli-remote/target/java-chains-cli-remote-${VERSION}.jar" \
+          )" || true
+          if [ -f "${CLI_REMOTE_JAR:-}" ]; then
+            echo "Found CLI remote Jar: ${CLI_REMOTE_JAR}"
+            cp "$CLI_REMOTE_JAR" release_base/java-chains-cli-remote.jar
+          fi
+
+          # 3. SDK jar
+          SDK_JAR="$(pick_first \
+            "java-chains-sdk/target/java-chains-sdk-${VERSION}.jar" \
+          )" || true
+          if [ -z "${SDK_JAR:-}" ]; then
+            SDK_JAR="$(find java-chains-sdk/target -maxdepth 1 -type f -name "java-chains-sdk-*.jar" \
+              ! -name "*-sources.jar" ! -name "*-javadoc.jar" ! -name "*.original" 2>/dev/null | sort | head -n 1 || true)"
+          fi
+          if [ -f "${SDK_JAR:-}" ]; then
+            echo "Found SDK Jar: ${SDK_JAR}"
             cp "$SDK_JAR" release_base/java-chains-sdk.jar
           else
-            echo "Error: chains-sdk jar not found"
+            echo "Error: java-chains-sdk jar not found"
             exit 1
           fi
 
-          # 3. 复制配置，并覆盖 v2.0 新增的 MCP 配置目录
+          # 4. Runtime config (plugins / third-libs / presets)
           cp -r release-deps/chains-config release_base/chains-config
           rm -rf release_base/chains-config/.git
 
-          if [ -d chains-config/mcp ]; then
-            mkdir -p release_base/chains-config/mcp
-            cp -r chains-config/mcp/. release_base/chains-config/mcp/
+          if [ -d chains-config ]; then
+            # Overlay any in-tree config additions (e.g. presets) without wiping deps.
+            cp -a chains-config/. release_base/chains-config/ 2>/dev/null || true
+            rm -rf release_base/chains-config/.git
           fi
 
       # ── 源码防泄漏：销毁所有源码，确保 artifact 只含编译产物 ──
@@ -339,7 +370,6 @@ jobs:
           rm -rf release-deps
           rm -rf ~/.m2/repository
 
-          # 确认 release_base 中没有源码文件
           if find release_base -type f \( \
             -name "*.java" -o -name "*.go" -o -name "*.ts" -o -name "*.tsx" \
             -o -name "*.vue" -o -name "*.jsx" -o -name "*.py" \
@@ -386,6 +416,7 @@ jobs:
           RELEASE_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
           SOURCE_REF="${{ needs.resolve_release_meta.outputs.source_ref }}"
           SOURCE_SHA="${{ needs.build.outputs.source_sha }}"
+          FRONTEND_SHA="${{ needs.build.outputs.frontend_sha }}"
           IS_PRERELEASE="${{ needs.resolve_release_meta.outputs.is_prerelease }}"
 
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
@@ -396,9 +427,19 @@ jobs:
           cat > release-notes.txt <<EOF
           Auto-generated release for version ${RELEASE_VERSION}
 
-          Source repository: Java-Chains/chains
-          Source ref: ${SOURCE_REF}
-          Source commit: ${SOURCE_SHA}
+          Backend repository: Java-Chains/chains
+          Backend ref: ${SOURCE_REF}
+          Backend commit: ${SOURCE_SHA}
+
+          Frontend: java-chains-web-element (Vue3 + Element Plus, in-tree)
+          Frontend commit: ${FRONTEND_SHA}
+
+          Artifacts:
+          - java-chains-\${VERSION}.tar.gz — Server (SPA from java-chains-web-element) + chains-config
+          - java-chains-\${VERSION}-<platform>.tar.gz|zip — Server + bundled JDK 8
+          - java-chains-cli-\${VERSION}.tar.gz — Product CLI fat jar + chains-config
+          - java-chains-sdk-\${VERSION}.jar — Embeddable SDK
+          - Docker: javachains/javachains:${RELEASE_VERSION}
           EOF
 
           ARGS=(
@@ -416,7 +457,7 @@ jobs:
           gh release create "${ARGS[@]}"
 
   # ====================================================
-  # Job 3: 矩阵打包 (主程序 + 对应平台 MCP)
+  # Job 3: 矩阵打包 (Server + JDK)
   # ====================================================
   bundle_assets:
     needs: [ resolve_release_meta, build, create_release ]
@@ -429,38 +470,26 @@ jobs:
             arch_api: x64
             suffix: linux-amd64
             ext: tar.gz
-            mcp_binary: java-chains-mcp-linux-amd64
-            mcp_target: java-chains-mcp
           - os_api: linux
             arch_api: aarch64
             suffix: linux-aarch64
             ext: tar.gz
-            mcp_binary: java-chains-mcp-linux-arm64
-            mcp_target: java-chains-mcp
           - os_api: windows
             arch_api: x64
             suffix: windows-amd64
             ext: zip
-            mcp_binary: java-chains-mcp-windows-amd64.exe
-            mcp_target: java-chains-mcp.exe
           - os_api: windows
             arch_api: arm64
             suffix: windows-arm64
             ext: zip
-            mcp_binary: java-chains-mcp-windows-arm64.exe
-            mcp_target: java-chains-mcp.exe
           - os_api: mac
             arch_api: x64
             suffix: macos-intel
             ext: tar.gz
-            mcp_binary: java-chains-mcp-macos-amd64
-            mcp_target: java-chains-mcp
           - os_api: mac
             arch_api: aarch64
             suffix: macos-m-series
             ext: tar.gz
-            mcp_binary: java-chains-mcp-macos-arm64
-            mcp_target: java-chains-mcp
 
     steps:
       - uses: actions/download-artifact@v4
@@ -512,12 +541,7 @@ jobs:
 
           cp base/java-chains.jar "$DIST_DIR/"
           cp -r base/chains-config "$DIST_DIR/"
-          cp "base/mcp-binaries/${{ matrix.mcp_binary }}" "$DIST_DIR/${{ matrix.mcp_target }}"
           mv jdk_final "$DIST_DIR/jdk"
-
-          if [ "${{ matrix.os_api }}" != "windows" ]; then
-            chmod +x "$DIST_DIR/${{ matrix.mcp_target }}"
-          fi
 
           echo "DIST_DIR=$DIST_DIR" >> "$GITHUB_ENV"
 
@@ -525,24 +549,21 @@ jobs:
         run: |
           cd "${{ env.DIST_DIR }}"
           if [ "${{ matrix.os_api }}" != "windows" ]; then
-            echo '#!/bin/bash' > start.sh
-            echo 'BASE_DIR=$(cd "$(dirname "$0")" && pwd)' >> start.sh
-            echo '"$BASE_DIR/jdk/bin/java" -jar "$BASE_DIR/java-chains.jar"' >> start.sh
+            printf '%s\n' \
+              '#!/bin/bash' \
+              'BASE_DIR=$(cd "$(dirname "$0")" && pwd)' \
+              'cd "$BASE_DIR"' \
+              'exec "$BASE_DIR/jdk/bin/java" -jar "$BASE_DIR/java-chains.jar"' \
+              > start.sh
             chmod +x start.sh
-
-            echo '#!/bin/bash' > start-mcp.sh
-            echo 'BASE_DIR=$(cd "$(dirname "$0")" && pwd)' >> start-mcp.sh
-            echo 'exec "$BASE_DIR/java-chains-mcp" "$@"' >> start-mcp.sh
-            chmod +x start-mcp.sh
           else
-            echo '@echo off' > start.bat
-            echo 'set "BASE_DIR=%~dp0"' >> start.bat
-            echo '"%BASE_DIR%jdk\bin\java.exe" -jar "%BASE_DIR%java-chains.jar"' >> start.bat
-            echo 'pause' >> start.bat
-
-            echo '@echo off' > start-mcp.bat
-            echo 'set "BASE_DIR=%~dp0"' >> start-mcp.bat
-            echo '"%BASE_DIR%java-chains-mcp.exe" %*' >> start-mcp.bat
+            printf '%s\r\n' \
+              '@echo off' \
+              'set "BASE_DIR=%~dp0"' \
+              'cd /d "%BASE_DIR%"' \
+              '"%BASE_DIR%jdk\bin\java.exe" -jar "%BASE_DIR%java-chains.jar"' \
+              'pause' \
+              > start.bat
           fi
 
       - name: Compress and Upload
@@ -560,7 +581,7 @@ jobs:
           gh release upload "$RELEASE_TAG" "$ASSET_NAME" --clobber --repo "$GITHUB_REPOSITORY"
 
   # ====================================================
-  # Job 4: 上传通用包 / MCP 全平台包 / CLI 独立包
+  # Job 4: 上传通用包 / CLI / SDK
   # ====================================================
   upload_standard_assets:
     needs: [ resolve_release_meta, build, create_release ]
@@ -582,14 +603,14 @@ jobs:
           tar -czvf "java-chains-${RELEASE_VERSION}.tar.gz" java-chains.jar chains-config
           gh release upload "$RELEASE_TAG" "java-chains-${RELEASE_VERSION}.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
 
-          tar -czvf "java-chains-mcp-${RELEASE_VERSION}-binaries.tar.gz" mcp-binaries
-          gh release upload "$RELEASE_TAG" "java-chains-mcp-${RELEASE_VERSION}-binaries.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
-
           mkdir cli_dist
-          cp cli-chains.jar cli_dist/
+          cp java-chains-cli.jar cli_dist/
           cp -r chains-config cli_dist/
-          tar -czvf "cli-chains-${RELEASE_VERSION}.tar.gz" -C cli_dist .
-          gh release upload "$RELEASE_TAG" "cli-chains-${RELEASE_VERSION}.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
+          if [ -f java-chains-cli-remote.jar ]; then
+            cp java-chains-cli-remote.jar cli_dist/
+          fi
+          tar -czvf "java-chains-cli-${RELEASE_VERSION}.tar.gz" -C cli_dist .
+          gh release upload "$RELEASE_TAG" "java-chains-cli-${RELEASE_VERSION}.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
 
           cp java-chains-sdk.jar "java-chains-sdk-${RELEASE_VERSION}.jar"
           gh release upload "$RELEASE_TAG" "java-chains-sdk-${RELEASE_VERSION}.jar" --clobber --repo "$GITHUB_REPOSITORY"
@@ -608,16 +629,13 @@ jobs:
           name: base-artifacts
           path: .
 
-      - name: Prepare Docker MCP binary names
+      - name: Prepare Docker context
         run: |
-          rm -f cli-chains.jar java-chains-sdk.jar
-
-      - name: Verify Docker MCP Binaries
-        run: |
-          test -d mcp-binaries
-          test -f mcp-binaries/java-chains-mcp-linux-amd64
-          test -f mcp-binaries/java-chains-mcp-linux-arm64
-          ls -la mcp-binaries
+          # Docker image only needs the server jar + chains-config
+          rm -f java-chains-cli.jar java-chains-cli-remote.jar java-chains-sdk.jar
+          test -f java-chains.jar
+          test -d chains-config
+          ls -la
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3

@@ -1,0 +1,31 @@
+services:
+  java-chains:
+    image: javachains/javachains:2.0.0-beta3
+    container_name: java-chains
+    restart: unless-stopped
+    ports:
+      - "8011:8011"      # Web / Studio
+      - "58080:58080"    # JNDI HTTP
+      - "50389:50389"    # JNDI LDAP
+      - "50388:50388"    # JNDI RMI
+      - "13999:13999"    # JRMPListener
+      - "3308:3308"      # Fake MySQL
+      - "11527:11527"    # TCP Server
+      - "50000:50000"    # HTTP Server
+    environment:
+      # true=开启 Web 登录鉴权；false 需同时设置 CHAINS_ALLOW_AUTH_DISABLED=true
+      CHAINS_AUTH: ${CHAINS_AUTH:-true}
+      # 为空则启动时随机生成密码（见 docker logs）
+      CHAINS_PASS: ${CHAINS_PASS:-}
+      CHAINS_ALLOW_AUTH_DISABLED: ${CHAINS_ALLOW_AUTH_DISABLED:-false}
+      # 可选：启动时查询公网 IP（会访问第三方 IP 回显服务）
+      CHAINS_SHOW_PUBLIC_IP: ${CHAINS_SHOW_PUBLIC_IP:-false}
+    volumes:
+      # 持久化配置 / 插件 / third-libs / presets
+      - ./chains-config:/chains/chains-config
+    networks:
+      - java-chains-net
+
+networks:
+  java-chains-net:
+    driver: bridge
