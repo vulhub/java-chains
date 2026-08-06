@@ -225,15 +225,16 @@ jobs:
       - name: Build Ship Artifacts
         run: |
           cd source
-          install -m 0755 ../.github/scripts/package-java-chains-web-element.sh \
-            scripts/frontend/package-java-chains-web-element.sh
-          sed -i 's/java-chains-web/java-chains-web-element/g' scripts/frontend/package-guard.sh
+          if [ ! -f scripts/frontend/package-java-chains-web-element.sh ]; then
+            install -m 0755 ../.github/scripts/package-java-chains-web-element.sh \
+              scripts/frontend/package-java-chains-web-element.sh
+          fi
 
-          mvn -pl java-chains-server -am clean package -DskipTests -Pfrontend,with-exploits \
+          # ONE Maven invocation — avoid Vector A session mismatch from a second -am package.
+          mvn -pl java-chains-server,java-chains-cli,java-chains-sdk -am clean package \
+            -DskipTests -Pfrontend,with-exploits \
             -Dfrontend.working.directory="${PWD}/java-chains-web-element" \
             -Dfrontend.package.script="${PWD}/scripts/frontend/package-java-chains-web-element.sh"
-
-          mvn -pl java-chains-cli,java-chains-sdk -am package -DskipTests
 
       - name: Prepare Base Artifacts
         run: |

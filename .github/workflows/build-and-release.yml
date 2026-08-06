@@ -258,18 +258,19 @@ jobs:
 
       - name: Build Ship Artifacts (Element SPA + CLI + SDK)
         run: |
-          # Product SPA = java-chains-web-element (pnpm build → generated-resources/static).
-          install -m 0755 _release_ci/.github/scripts/package-java-chains-web-element.sh \
-            scripts/frontend/package-java-chains-web-element.sh
+          # Product SPA = java-chains-web-element (pnpm → generated-resources/static).
+          # Prefer in-tree ship script from chains; fall back to release-repo copy.
+          if [ ! -f scripts/frontend/package-java-chains-web-element.sh ]; then
+            install -m 0755 _release_ci/.github/scripts/package-java-chains-web-element.sh \
+              scripts/frontend/package-java-chains-web-element.sh
+          fi
 
-          # package-guard defaults to React source id; accept Element for releases.
-          sed -i 's/java-chains-web/java-chains-web-element/g' scripts/frontend/package-guard.sh
-
-          mvn -pl java-chains-server -am clean package -DskipTests -Pfrontend,with-exploits \
+          # ONE Maven invocation: second `mvn -am package` without -Pfrontend reuses
+          # server target/ but a new maven.build.timestamp → Vector A session mismatch.
+          mvn -pl java-chains-server,java-chains-cli,java-chains-sdk -am clean package \
+            -DskipTests -Pfrontend,with-exploits \
             -Dfrontend.working.directory="${PWD}/java-chains-web-element" \
             -Dfrontend.package.script="${PWD}/scripts/frontend/package-java-chains-web-element.sh"
-
-          mvn -pl java-chains-cli,java-chains-sdk -am package -DskipTests
 
       - name: Prepare Base Artifacts
         run: |
