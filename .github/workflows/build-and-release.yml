@@ -406,9 +406,9 @@ jobs:
   create_release:
     needs: [ resolve_release_meta, build ]
     runs-on: ubuntu-latest
+    # No actions/* uses: — avoids GitHub "GetResolveActionsDownloadInfo" 503 during Set up job.
+    # Notes are generated inline; gh is preinstalled on ubuntu-latest.
     steps:
-      - uses: actions/checkout@v4
-
       - name: Create Draft Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
