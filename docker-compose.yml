@@ -1,6 +1,6 @@
 services:
   java-chains:
-    image: javachains/javachains:2.0.0-beta3
+    image: javachains/javachains:2.0.0-beta4
     container_name: java-chains
     restart: unless-stopped
     ports:
@@ -15,7 +15,7 @@ services:
     environment:
       # true=开启 Web 登录鉴权；false 需同时设置 CHAINS_ALLOW_AUTH_DISABLED=true
       CHAINS_AUTH: ${CHAINS_AUTH:-true}
-      # 为空则启动时随机生成密码（见 docker logs）
+      # 为空则启动时随机生成密码（docker logs | grep -i auth → "Auth" 行）
       CHAINS_PASS: ${CHAINS_PASS:-}
       CHAINS_ALLOW_AUTH_DISABLED: ${CHAINS_ALLOW_AUTH_DISABLED:-false}
       # 可选：启动时查询公网 IP（会访问第三方 IP 回显服务）

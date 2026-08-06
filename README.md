@@ -12,21 +12,13 @@
 </div>
 </div>
 
-`Java-Chains` is a Java payload generation and exploitation web platform for security researchers. It helps you build Java payloads quickly and test scenarios such as JNDI injection, MySQL JDBC deserialization, and JRMP deserialization.
+`Java-Chains` is a Java payload generation platform for security researchers. Build deserialization / JNDI / JDBC / JRMP payloads quickly and run protocol listeners (JNDI, FakeMySQL, JRMP, HTTP, TCP) from a web Studio or CLI.
 
 > Standing on the shoulders of giants
 
 <p align="center">
   <img src="./img/main.png" />
 </p>
-
-## v2.0 Beta highlights
-
-- **Studio workbench** — default sample chain, fuzzy gadget search, shareable chain URL
-- **Canonical `/api`** — session + scoped API token (`X-Api-Token`)
-- **Product CLI** — `java-chains-cli` for remote orchestration and offline pure generate
-- **BuiltIn Exploits** — optional exploit workbench modules packaged by default
-- **Docker / Compose** — `javachains/javachains:2.0.0-beta3` (no bundled MCP binary)
 
 ## Quick start
 
@@ -35,9 +27,10 @@ Docs: https://java-chains.github.io/en/docs/guide
 ### Docker Compose
 
 ```bash
-# optional: copy chains-config from the release tarball beside this file
+# optional: place chains-config from the release tarball next to docker-compose.yml
 docker compose up -d
-docker logs -f java-chains | grep -i password
+# startup banner prints credentials on the "Auth" line
+docker logs -f java-chains | grep -i auth
 ```
 
 Open `http://your-ip:8011`
@@ -53,40 +46,42 @@ docker run -d \
   -p 3308:3308 -p 13999:13999 -p 50000:50000 -p 11527:11527 \
   -e CHAINS_AUTH=true \
   -e CHAINS_PASS= \
-  javachains/javachains:2.0.0-beta3
+  javachains/javachains:2.0.0-beta4
 ```
+
+Empty `CHAINS_PASS` → a random password is generated at startup (see the `Auth` line in logs).
 
 ### Jar
 
 Requires **OpenJDK / Temurin / Zulu JDK 8** (Oracle JDK 8 is not recommended for BCEL chains).
 
 ```bash
-tar -xzf java-chains-2.0.0-beta3.tar.gz
-cd java-chains-2.0.0-beta3   # or unpack layout with java-chains.jar + chains-config/
+tar -xzf java-chains-2.0.0-beta4.tar.gz
+cd java-chains-2.0.0-beta4   # or unpack layout with java-chains.jar + chains-config/
 java -jar java-chains.jar
 ```
 
 ### CLI (optional)
 
 ```bash
-# remote pure generate against a running server
+# remote generate against a running server
 export CHAINS_API_TOKEN=...
 java -jar java-chains-cli.jar generate \
   --execution remote --server http://127.0.0.1:8011 --token-env CHAINS_API_TOKEN \
   --payload JavaNativePayload --chain CommonsBeanutils1 --arg cmd=id --encode base64 --json
 
-# offline local pure generate (fat jar only)
+# offline local generate (fat jar)
 java -jar java-chains-cli.jar generate --execution local \
   --payload JavaNativePayload --chain CommonsBeanutils1 --arg cmd=id --encode base64 --json
 ```
 
-## Release artifacts (v2)
+## Release artifacts
 
 | Artifact | Contents |
 |---|---|
 | `java-chains-<ver>.tar.gz` | Server fat jar (SPA embedded) + `chains-config` |
 | `java-chains-<ver>-<platform>.*` | Same + bundled JDK 8 |
-| `java-chains-cli-<ver>.tar.gz` | Product CLI fat jar (+ thin remote jar if built) + `chains-config` |
+| `java-chains-cli-<ver>.tar.gz` | Product CLI fat jar + `chains-config` |
 | `java-chains-sdk-<ver>.jar` | Embeddable SDK |
 | Docker `javachains/javachains:<ver>` | Server image |
 
