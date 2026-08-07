@@ -295,14 +295,24 @@ jobs:
           fi
 
           SDK_JAR="$(pick_first \
+            "source/java-chains-sdk/target/java-chains-sdk-${VERSION}-jar-with-dependencies.jar" \
             "source/java-chains-sdk/target/java-chains-sdk-${VERSION}.jar" \
           )" || true
+          if [ -z "${SDK_JAR:-}" ]; then
+            SDK_JAR="$(find source/java-chains-sdk/target -maxdepth 1 -type f -name "java-chains-sdk-*-jar-with-dependencies.jar" 2>/dev/null | sort | head -n 1 || true)"
+          fi
           if [ -z "${SDK_JAR:-}" ]; then
             SDK_JAR="$(find source/java-chains-sdk/target -maxdepth 1 -type f -name "java-chains-sdk-*.jar" \
               ! -name "*-sources.jar" ! -name "*-javadoc.jar" ! -name "*.original" 2>/dev/null | sort | head -n 1 || true)"
           fi
           if [ -f "${SDK_JAR:-}" ]; then
-            echo "Found SDK Jar: ${SDK_JAR}"
+            echo "Found SDK Jar: ${SDK_JAR} ($(wc -c < "${SDK_JAR}" | tr -d ' ') bytes)"
+            SDK_BYTES="$(wc -c < "${SDK_JAR}" | tr -d ' ')"
+            if [ "${SDK_BYTES}" -lt 1048576 ]; then
+              echo "Error: SDK jar looks thin (${SDK_BYTES} bytes); expected jar-with-dependencies"
+              ls -la source/java-chains-sdk/target/*.jar 2>/dev/null || true
+              exit 1
+            fi
             cp "$SDK_JAR" release_base/java-chains-sdk.jar
           else
             echo "Error: java-chains-sdk jar not found"

@@ -1,6 +1,6 @@
 services:
   java-chains:
-    image: javachains/javachains:2.0.0-beta4
+    image: javachains/javachains:2.0.0-beta5
     container_name: java-chains
     restart: unless-stopped
     ports:

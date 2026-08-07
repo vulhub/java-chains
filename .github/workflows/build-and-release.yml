@@ -13,6 +13,11 @@ on:
         description: "Source ref in Java-Chains/chains (tag, branch, or commit). Defaults to v<version>"
         required: false
         type: string
+      publish:
+        description: "Publish the GitHub Release immediately (skip draft). Default: draft only."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -28,6 +33,7 @@ jobs:
       release_tag: ${{ steps.meta.outputs.release_tag }}
       source_ref: ${{ steps.meta.outputs.source_ref }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      publish_release: ${{ steps.meta.outputs.publish_release }}
       docker_tags: ${{ steps.meta.outputs.docker_tags }}
       chains_dev_jars_repository: ${{ steps.manifest.outputs.chains_dev_jars_repository }}
       chains_dev_jars_ref: ${{ steps.manifest.outputs.chains_dev_jars_ref }}
@@ -64,10 +70,19 @@ jobs:
             IS_PRERELEASE="false"
           fi
 
+          # workflow_dispatch boolean → string "true"/"false"; default draft.
+          PUBLISH_INPUT="${{ inputs.publish }}"
+          if [ "$PUBLISH_INPUT" = "true" ]; then
+            PUBLISH_RELEASE="true"
+          else
+            PUBLISH_RELEASE="false"
+          fi
+
           echo "release_version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
           echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "publish_release=$PUBLISH_RELEASE" >> "$GITHUB_OUTPUT"
           {
             echo "docker_tags<<EOF"
             echo "javachains/javachains:${VERSION}"
@@ -338,16 +353,28 @@ jobs:
             cp "$CLI_REMOTE_JAR" release_base/java-chains-cli-remote.jar
           fi
 
-          # 3. SDK jar
+          # 3. SDK fat jar (jar-with-dependencies). Thin Maven primary is too small for
+          # drop-in embed — it ships ChainsLocalClient without core/nodes on the classpath.
           SDK_JAR="$(pick_first \
+            "java-chains-sdk/target/java-chains-sdk-${VERSION}-jar-with-dependencies.jar" \
             "java-chains-sdk/target/java-chains-sdk-${VERSION}.jar" \
           )" || true
+          if [ -z "${SDK_JAR:-}" ]; then
+            SDK_JAR="$(find java-chains-sdk/target -maxdepth 1 -type f -name "java-chains-sdk-*-jar-with-dependencies.jar" 2>/dev/null | sort | head -n 1 || true)"
+          fi
           if [ -z "${SDK_JAR:-}" ]; then
             SDK_JAR="$(find java-chains-sdk/target -maxdepth 1 -type f -name "java-chains-sdk-*.jar" \
               ! -name "*-sources.jar" ! -name "*-javadoc.jar" ! -name "*.original" 2>/dev/null | sort | head -n 1 || true)"
           fi
           if [ -f "${SDK_JAR:-}" ]; then
-            echo "Found SDK Jar: ${SDK_JAR}"
+            echo "Found SDK Jar: ${SDK_JAR} ($(wc -c < "${SDK_JAR}" | tr -d ' ') bytes)"
+            # Guard: refuse to ship a ~100KB thin jar as the embeddable release artifact.
+            SDK_BYTES="$(wc -c < "${SDK_JAR}" | tr -d ' ')"
+            if [ "${SDK_BYTES}" -lt 1048576 ]; then
+              echo "Error: SDK jar looks thin (${SDK_BYTES} bytes); expected jar-with-dependencies"
+              ls -la java-chains-sdk/target/*.jar 2>/dev/null || true
+              exit 1
+            fi
             cp "$SDK_JAR" release_base/java-chains-sdk.jar
           else
             echo "Error: java-chains-sdk jar not found"
@@ -409,7 +436,7 @@ jobs:
     # No actions/* uses: — avoids GitHub "GetResolveActionsDownloadInfo" 503 during Set up job.
     # Notes are generated inline; gh is preinstalled on ubuntu-latest.
     steps:
-      - name: Create Draft Release
+      - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -419,6 +446,7 @@ jobs:
           SOURCE_SHA="${{ needs.build.outputs.source_sha }}"
           FRONTEND_SHA="${{ needs.build.outputs.frontend_sha }}"
           IS_PRERELEASE="${{ needs.resolve_release_meta.outputs.is_prerelease }}"
+          PUBLISH_RELEASE="${{ needs.resolve_release_meta.outputs.publish_release }}"
 
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists, skip creation."
@@ -439,17 +467,24 @@ jobs:
           - java-chains-\${VERSION}.tar.gz — Server (SPA from java-chains-web-element) + chains-config
           - java-chains-\${VERSION}-<platform>.tar.gz|zip — Server + bundled JDK 8
           - java-chains-cli-\${VERSION}.tar.gz — Product CLI fat jar + chains-config
-          - java-chains-sdk-\${VERSION}.jar — Embeddable SDK
+          - java-chains-sdk-\${VERSION}.jar — Embeddable SDK (fat jar; core/nodes included)
           - Docker: javachains/javachains:${RELEASE_VERSION}
           EOF
 
           ARGS=(
             "$RELEASE_TAG"
-            --draft
             --title "Release $RELEASE_TAG"
             --repo "$GITHUB_REPOSITORY"
             --notes-file release-notes.txt
           )
+
+          # Default: draft. Set workflow input publish=true to publish immediately.
+          if [ "$PUBLISH_RELEASE" != "true" ]; then
+            ARGS+=(--draft)
+            echo "Creating DRAFT release $RELEASE_TAG"
+          else
+            echo "Creating PUBLISHED release $RELEASE_TAG (publish=true)"
+          fi
 
           if [ "$IS_PRERELEASE" = "true" ]; then
             ARGS+=(--prerelease)
