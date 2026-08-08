@@ -1,3 +1,27 @@
+## 2.0.0-beta3
+
+#### 🚀 New Features
+
+- **Studio workbench rewrite** — React SPA (`java-chains-web`) with default sample chain, fuzzy gadget search (camelCase initials), shareable chain URL, Ctrl+Enter generate, Copy as cURL / CLI.
+- **Canonical `/api`** — session login plus scoped API token (`X-Api-Token`) for catalog / chain / generate automation.
+- **Product CLI** — `java-chains-cli` fat jar: remote orchestration and offline local pure generate; thin `java-chains-cli-remote` for remote-only use.
+- **BuiltIn Exploit workbench** — optional exploit modules (HTTP POST deserialize, JNDI/Log4j HTTP fuzz demos, etc.) packaged by default.
+- **Protocol runtime** — JNDI / FakeMySQL / JRMP / TCP / HTTP unified under ProtocolParseService; SUID overrides via `writeClassDescriptor`.
+- **Presets** — built-in + user presets (`chains-config/presets/`), render → generate.
+
+#### 🛠 Packaging / Ops
+
+- Ship artifact is `java-chains.jar` (Spring Boot exec with embedded SPA) + `chains-config`.
+- Docker image no longer bundles MCP binaries; Compose example added at repo root.
+- Nightly builds track `v2-dev` by default.
+- Requires OpenJDK / Temurin / Zulu JDK 8 (Oracle JDK 8 not recommended for BCEL).
+
+#### ⚠️ Breaking / Notes
+
+- Module rename: server `java-chains-server`, CLI `java-chains-cli`, SDK `java-chains-sdk`, web `java-chains-web`.
+- Legacy Go MCP packaging removed from release images.
+- Auth-disabled mode requires explicit `CHAINS_ALLOW_AUTH_DISABLED=true` acknowledgement.
+
 ## 1.4.2
 
 #### 🚀 New Features

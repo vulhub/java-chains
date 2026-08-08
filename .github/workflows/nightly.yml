@@ -1,3 +1,5 @@
+# Nightly builds for the java-chains release repository (formerly web-chains).
+# Backend: Java-Chains/chains | SPA: in-tree java-chains-web-element (Vue Element Plus)
 name: Nightly Build
 
 on:
@@ -7,10 +9,10 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: "Source ref in Java-Chains/chains (branch/tag/commit). Defaults to main"
+        description: "Branch or tag in Java-Chains/chains only (no commit SHA). Defaults to v2-dev. Names containing 'internal' are rejected."
         required: false
         type: string
-        default: 'main'
+        default: 'v2-dev'
       skip_docker:
         description: "Skip Docker build"
         required: false
@@ -35,6 +37,7 @@ jobs:
       source_sha: ${{ steps.check.outputs.source_sha }}
       short_sha: ${{ steps.check.outputs.short_sha }}
       nightly_version: ${{ steps.check.outputs.nightly_version }}
+      source_ref: ${{ steps.check.outputs.source_ref }}
     steps:
       - name: Check for Recent Changes
         id: check
@@ -42,33 +45,75 @@ jobs:
           DEPENDENCY_REPO_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SOURCE_REF="${{ inputs.source_ref || 'main' }}"
+          SOURCE_REF="${{ inputs.source_ref || 'v2-dev' }}"
 
-          # 获取最新 commit SHA
-          SOURCE_SHA=$(git ls-remote "https://x-access-token:${DEPENDENCY_REPO_TOKEN}@github.com/Java-Chains/chains.git" "$SOURCE_REF" | head -1 | cut -f1)
+          # Public nightly: branch/tag only; never commit SHA; never *internal* refs.
+          if [[ "$SOURCE_REF" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+            echo "source_ref must be a branch or tag name, not a commit SHA: $SOURCE_REF"
+            exit 1
+          fi
+          if [[ "$SOURCE_REF" == refs/* ]] || [[ "$SOURCE_REF" == *".."* ]] || [[ "$SOURCE_REF" == *" "* ]]; then
+            echo "source_ref must be a plain branch or tag name: $SOURCE_REF"
+            exit 1
+          fi
+          SOURCE_REF_LC="$(printf '%s' "$SOURCE_REF" | tr '[:upper:]' '[:lower:]')"
+          if [[ "$SOURCE_REF_LC" == *internal* ]]; then
+            echo "Refusing public Nightly Build for internal source_ref: $SOURCE_REF"
+            echo "Use a public branch/tag (e.g. v2-dev), or the internal release workflow."
+            exit 1
+          fi
+          if [ -z "${DEPENDENCY_REPO_TOKEN:-}" ]; then
+            echo "DEPENDENCY_REPO_TOKEN is required to validate source_ref against Java-Chains/chains"
+            exit 1
+          fi
+          CHAINS_URL="https://x-access-token:${DEPENDENCY_REPO_TOKEN}@github.com/Java-Chains/chains.git"
+          REF_LINES="$(git ls-remote "$CHAINS_URL" \
+            "refs/heads/${SOURCE_REF}" \
+            "refs/tags/${SOURCE_REF}" \
+            "refs/tags/${SOURCE_REF}^{}" || true)"
+          if [ -z "$(printf '%s' "$REF_LINES" | tr -d '[:space:]')" ]; then
+            echo "source_ref must exist as refs/heads/* or refs/tags/* in Java-Chains/chains: $SOURCE_REF"
+            echo "Commit SHAs and other object ids are not accepted."
+            exit 1
+          fi
+          echo "Validated public source_ref as branch/tag:"
+          printf '%s\n' "$REF_LINES"
+
+          SOURCE_SHA="$(printf '%s\n' "$REF_LINES" | awk '
+            $2 ~ /\^\{\}$/ { peel=$1 }
+            $2 ~ /^refs\/heads\// { head=$1 }
+            $2 ~ /^refs\/tags\// && $2 !~ /\^\{\}$/ { tag=$1 }
+            END {
+              if (peel != "") { print peel; exit }
+              if (head != "") { print head; exit }
+              if (tag != "") { print tag; exit }
+            }
+          ')"
           if [ -z "$SOURCE_SHA" ]; then
-            echo "Cannot resolve ref: $SOURCE_REF"
+            echo "Cannot resolve branch/tag SHA for: $SOURCE_REF"
             exit 1
           fi
 
           SHORT_SHA="${SOURCE_SHA:0:7}"
           NIGHTLY_VERSION="nightly-$(date -u +%Y%m%d)-${SHORT_SHA}"
 
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "nightly_version=$NIGHTLY_VERSION" >> "$GITHUB_OUTPUT"
 
-          # workflow_dispatch 总是构建
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # schedule 模式：检查最近 24h 是否有新提交
           LAST_NIGHTLY_SHA=""
           RELEASE_JSON=$(gh release view nightly --repo "$GITHUB_REPOSITORY" --json body 2>/dev/null || true)
           if [ -n "$RELEASE_JSON" ]; then
-            LAST_NIGHTLY_SHA=$(echo "$RELEASE_JSON" | jq -r '.body' | grep -oP 'Source commit\s*[:|]\s*\K[0-9a-f]{7,40}' | head -1 || true)
+            LAST_NIGHTLY_SHA=$(echo "$RELEASE_JSON" | jq -r '.body' | grep -oP 'Backend commit\s*[:|]\s*\K[0-9a-f]{7,40}' | head -1 || true)
+            if [ -z "$LAST_NIGHTLY_SHA" ]; then
+              LAST_NIGHTLY_SHA=$(echo "$RELEASE_JSON" | jq -r '.body' | grep -oP 'Source commit\s*[:|]\s*\K[0-9a-f]{7,40}' | head -1 || true)
+            fi
           fi
           echo "Last nightly SHA: ${LAST_NIGHTLY_SHA:-<none>}"
           echo "Current source SHA: $SOURCE_SHA"
@@ -88,11 +133,10 @@ jobs:
     needs: check_changes
     if: needs.check_changes.outputs.should_build == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      frontend_sha: ${{ steps.frontend.outputs.frontend_sha }}
     env:
       JAVA_VERSION: '8'
-      NODE_VERSION: '23.2.0'
-      PNPM_VERSION: '9.13.2'
-      GO_VERSION: '1.20.14'
 
     steps:
       - name: Checkout Release Repo
@@ -133,9 +177,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Java-Chains/chains
-          ref: ${{ inputs.source_ref || 'main' }}
+          ref: ${{ needs.check_changes.outputs.source_ref }}
           token: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
-          fetch-depth: 1
+          fetch-depth: 0
           path: source
 
       - name: Clone Pinned Dependency Repositories
@@ -163,6 +207,18 @@ jobs:
           clone_repo "${{ steps.manifest.outputs.java_memshell_generator_repository }}" "release-deps/java-memshell-generator" "${{ steps.manifest.outputs.java_memshell_generator_ref }}"
           clone_repo "${{ steps.manifest.outputs.chains_config_repository }}" "release-deps/chains-config" "${{ steps.manifest.outputs.chains_config_ref }}"
 
+      - name: Resolve Element Frontend Revision
+        id: frontend
+        shell: bash
+        run: |
+          test -f source/java-chains-web-element/package.json
+          test -f source/java-chains-web-element/pnpm-lock.yaml
+          FRONTEND_SHA="$(git -C source log -1 --format=%H -- java-chains-web-element)"
+          FRONTEND_CT="$(git -C source log -1 --format=%ct -- java-chains-web-element)"
+          echo "frontend_sha=${FRONTEND_SHA}" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=${FRONTEND_CT}" >> "$GITHUB_ENV"
+          echo "Using source/java-chains-web-element @ ${FRONTEND_SHA}"
+
       - name: Set up Temurin JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
@@ -175,20 +231,24 @@ jobs:
         with:
           maven-version: 3.9.6
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
       - name: Cache Maven dependencies
         uses: actions/cache@v4
         with:
           path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-nightly-${{ hashFiles('source/**/pom.xml') }}
+          key: ${{ runner.os }}-maven-nightly-v2-${{ hashFiles('source/**/pom.xml') }}
           restore-keys: |
+            ${{ runner.os }}-maven-nightly-v2-
             ${{ runner.os }}-maven-nightly-
             ${{ runner.os }}-maven-
-
-      - name: Set up Go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: source/mcp-go/go.sum
 
       - name: Install Dev Jars
         run: |
@@ -203,97 +263,84 @@ jobs:
           cd ../../release-deps/java-memshell-generator
           mvn clean install -DskipTests
 
-      - name: Set up Node.js & pnpm
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Build Frontend
-        run: |
-          cd source/frontend
-          pnpm install
-          pnpm build
-
-          mkdir -p ../java-chains/src/main/resources/static
-          rm -rf ../java-chains/src/main/resources/static/*
-          cp -r dist/* ../java-chains/src/main/resources/static/
-
-      - name: Build Backend (Server & CLI)
+      - name: Build Ship Artifacts
         run: |
           cd source
-          mvn clean install -DskipTests -Dmaven.compiler.source=1.8 -Dmaven.compiler.target=1.8
+          if [ ! -f scripts/frontend/package-java-chains-web-element.sh ]; then
+            install -m 0755 ../.github/scripts/package-java-chains-web-element.sh \
+              scripts/frontend/package-java-chains-web-element.sh
+          fi
 
-      - name: Build MCP Binaries
-        run: |
-          mkdir -p release_base/mcp-binaries
-          cd source/mcp-go
-
-          build_mcp() {
-            local goos="$1"
-            local goarch="$2"
-            local output="$3"
-            echo "Building ${output} ..."
-            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-              go build -trimpath -ldflags="-s -w" -o "../../release_base/mcp-binaries/${output}" ./cmd/mcp-go
-          }
-
-          build_mcp linux amd64 java-chains-mcp-linux-amd64
-          build_mcp linux arm64 java-chains-mcp-linux-arm64
-          build_mcp windows amd64 java-chains-mcp-windows-amd64.exe
-          build_mcp windows arm64 java-chains-mcp-windows-arm64.exe
-          build_mcp darwin amd64 java-chains-mcp-macos-amd64
-          build_mcp darwin arm64 java-chains-mcp-macos-arm64
+          # ONE Maven invocation — avoid Vector A session mismatch from a second -am package.
+          # Product surface: server + java-chains-cli (no java-chains-sdk).
+          mvn -pl java-chains-server,java-chains-cli -am clean package \
+            -DskipTests -Pfrontend,with-exploits \
+            -Dfrontend.working.directory="${PWD}/java-chains-web-element" \
+            -Dfrontend.package.script="${PWD}/scripts/frontend/package-java-chains-web-element.sh"
 
       - name: Prepare Base Artifacts
         run: |
-          SERVER_JAR=$(find source -maxdepth 1 -type f -name "java-chains-*-exec.jar" | sort | head -n 1)
-          if [ -z "$SERVER_JAR" ]; then
-            SERVER_JAR=$(find source -maxdepth 1 -type f -name "java-chains-*.jar" \
-              ! -name "*-sources.jar" \
-              ! -name "*-javadoc.jar" \
-              ! -name "*.original" | sort | head -n 1)
+          mkdir -p release_base
+          VERSION="$(sed -n '0,/<version>/s/.*<version>\([^<]*\)<\/version>.*/\1/p' source/pom.xml | head -n 1)"
+          echo "Resolved source version: ${VERSION:-<unknown>}"
+
+          pick_first() {
+            local candidate
+            for candidate in "$@"; do
+              if [ -f "$candidate" ]; then
+                printf '%s\n' "$candidate"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          SERVER_JAR="$(pick_first \
+            "source/java-chains-${VERSION}-exec.jar" \
+            "source/java-chains-server-${VERSION}-exec.jar" \
+            "source/java-chains-server/target/java-chains-server-${VERSION}-exec.jar" \
+            "source/java-chains-server/target/java-chains-${VERSION}-exec.jar" \
+          )" || true
+
+          if [ -z "${SERVER_JAR:-}" ]; then
+            SERVER_JAR="$(find source -maxdepth 2 -type f \( \
+              -name "java-chains-*-exec.jar" -o -name "java-chains-server-*-exec.jar" \
+            \) ! -name "*-sources.jar" ! -name "*-javadoc.jar" | sort | head -n 1 || true)"
           fi
 
-          if [ -f "$SERVER_JAR" ]; then
-            echo "Found Server Jar: $(basename "$SERVER_JAR")"
+          if [ -f "${SERVER_JAR:-}" ]; then
+            echo "Found Server Jar: ${SERVER_JAR}"
             cp "$SERVER_JAR" release_base/java-chains.jar
           else
-            echo "Error: java-chains jar not found"
+            echo "Error: java-chains server exec jar not found"
+            find source -maxdepth 3 -type f -name "*.jar" | sort | head -n 80
             exit 1
           fi
 
-          CLI_JAR=$(find source/cli-chains/target -type f -name "cli-chains-*-jar-with-dependencies.jar" | sort | head -n 1)
-          if [ -z "$CLI_JAR" ]; then
-            CLI_JAR=$(find source -maxdepth 1 -type f -name "cli-chains-*-jar-with-dependencies.jar" | sort | head -n 1)
+          CLI_JAR="$(pick_first \
+            "source/java-chains-cli/target/java-chains-cli-${VERSION}-jar-with-dependencies.jar" \
+            "source/java-chains-cli/target/java-chains-cli-${VERSION}.jar" \
+          )" || true
+          if [ -z "${CLI_JAR:-}" ]; then
+            CLI_JAR="$(find source/java-chains-cli/target -type f -name "java-chains-cli-*-jar-with-dependencies.jar" 2>/dev/null | sort | head -n 1 || true)"
+          fi
+          if [ -f "${CLI_JAR:-}" ]; then
+            echo "Found CLI Jar: ${CLI_JAR}"
+            cp "$CLI_JAR" release_base/java-chains-cli.jar
+          else
+            echo "Warning: java-chains-cli jar not found, skipping"
           fi
 
-          if [ -f "$CLI_JAR" ]; then
-            echo "Found CLI Jar: $(basename "$CLI_JAR")"
-            cp "$CLI_JAR" release_base/cli-chains.jar
-          else
-            echo "Warning: cli-chains jar not found, skipping"
-          fi
-
-          SDK_JAR=$(find source/chains-sdk/target -maxdepth 1 -type f -name "chains-sdk-*.jar" \
-            ! -name "*-sources.jar" ! -name "*-javadoc.jar" ! -name "*.original" | sort | head -n 1)
-          if [ -f "$SDK_JAR" ]; then
-            echo "Found SDK Jar: $(basename "$SDK_JAR")"
-            cp "$SDK_JAR" release_base/java-chains-sdk.jar
-          else
-            echo "Error: chains-sdk jar not found"
-            exit 1
+          CLI_REMOTE_JAR="$(find source/java-chains-cli-remote/target -type f -name "java-chains-cli-remote-*-jar-with-dependencies.jar" 2>/dev/null | sort | head -n 1 || true)"
+          if [ -f "${CLI_REMOTE_JAR:-}" ]; then
+            cp "$CLI_REMOTE_JAR" release_base/java-chains-cli-remote.jar
           fi
 
           cp -r release-deps/chains-config release_base/chains-config
           rm -rf release_base/chains-config/.git
-
-          if [ -d source/chains-config/mcp ]; then
-            mkdir -p release_base/chains-config/mcp
-            cp -r source/chains-config/mcp/. release_base/chains-config/mcp/
+          if [ -d source/chains-config ]; then
+            cp -a source/chains-config/. release_base/chains-config/ 2>/dev/null || true
+            rm -rf release_base/chains-config/.git
           fi
 
       - name: Purge
@@ -321,7 +368,6 @@ jobs:
             exit 1
           fi
 
-          # 递归清除残留的 .git 目录
           find release_base -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
 
           echo "Artifact contents:"
@@ -353,23 +399,16 @@ jobs:
         run: |
           NIGHTLY_VERSION="${{ needs.check_changes.outputs.nightly_version }}"
 
-          # 通用包 (server + config)
           tar -czf "java-chains-${NIGHTLY_VERSION}.tar.gz" -C base java-chains.jar chains-config
 
-          # MCP 全平台包
-          tar -czf "java-chains-mcp-${NIGHTLY_VERSION}-binaries.tar.gz" -C base mcp-binaries
-
-          # SDK jar (单独发布)
-          if [ -f base/java-chains-sdk.jar ]; then
-            cp base/java-chains-sdk.jar "java-chains-sdk-${NIGHTLY_VERSION}.jar"
-          fi
-
-          # CLI 包 (如果存在)
-          if [ -f base/cli-chains.jar ]; then
+          if [ -f base/java-chains-cli.jar ]; then
             mkdir -p cli_dist
-            cp base/cli-chains.jar cli_dist/
+            cp base/java-chains-cli.jar cli_dist/
             cp -r base/chains-config cli_dist/
-            tar -czf "cli-chains-${NIGHTLY_VERSION}.tar.gz" -C cli_dist .
+            if [ -f base/java-chains-cli-remote.jar ]; then
+              cp base/java-chains-cli-remote.jar cli_dist/
+            fi
+            tar -czf "java-chains-cli-${NIGHTLY_VERSION}.tar.gz" -C cli_dist .
           fi
 
       - name: Update Nightly Release
@@ -378,10 +417,10 @@ jobs:
         run: |
           NIGHTLY_VERSION="${{ needs.check_changes.outputs.nightly_version }}"
           SOURCE_SHA="${{ needs.check_changes.outputs.source_sha }}"
-          SHORT_SHA="${{ needs.check_changes.outputs.short_sha }}"
+          SOURCE_REF="${{ needs.check_changes.outputs.source_ref }}"
+          FRONTEND_SHA="${{ needs.build.outputs.frontend_sha }}"
           BUILD_DATE=$(date -u +%Y-%m-%d)
 
-          # 删除旧的 nightly release（如果存在）
           gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
           git push --delete origin nightly 2>/dev/null || true
 
@@ -392,21 +431,21 @@ jobs:
 
           | Key | Value |
           |-----|-------|
-          | Source ref | main |
-          | Source commit | ${SOURCE_SHA} |
+          | Backend ref | ${SOURCE_REF} |
+          | Backend commit | ${SOURCE_SHA} |
+          | Frontend | java-chains-web-element |
+          | Frontend commit | ${FRONTEND_SHA} |
           | Build version | ${NIGHTLY_VERSION} |
           | Build date | ${BUILD_DATE} |
 
           ### Artifacts
-          - \`java-chains-${NIGHTLY_VERSION}.tar.gz\` — Server + Config
-          - \`java-chains-mcp-${NIGHTLY_VERSION}-binaries.tar.gz\` — MCP Binaries (all platforms)
-          - \`cli-chains-${NIGHTLY_VERSION}.tar.gz\` — CLI Tool
-          - \`java-chains-sdk-${NIGHTLY_VERSION}.jar\` — SDK Library
+          - \`java-chains-${NIGHTLY_VERSION}.tar.gz\` — Server (SPA from java-chains-web-element) + Config
+          - \`java-chains-cli-${NIGHTLY_VERSION}.tar.gz\` — Product CLI
           EOF
           )
 
           ASSETS=()
-          for f in *.tar.gz java-chains-sdk-*.jar; do
+          for f in *.tar.gz; do
             [ -f "$f" ] && ASSETS+=("$f")
           done
 
@@ -437,17 +476,13 @@ jobs:
 
       - name: Prepare Docker Context (no source code)
         run: |
-          rm -f docker-context/cli-chains.jar
-          rm -f docker-context/java-chains-sdk.jar
+          rm -f docker-context/java-chains-cli.jar
+          rm -f docker-context/java-chains-cli-remote.jar
 
-          # 只保留 Dockerfile 需要的文件
           cp Dockerfile docker-context/
 
           test -f docker-context/java-chains.jar
-          test -d docker-context/mcp-binaries
           test -d docker-context/chains-config
-          test -f docker-context/mcp-binaries/java-chains-mcp-linux-amd64
-          test -f docker-context/mcp-binaries/java-chains-mcp-linux-arm64
 
           echo "Docker context contents:"
           find docker-context -type f | sort
