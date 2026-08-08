@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       source_ref:
-        description: "Branch or tag in Java-Chains/chains only (no commit SHA). Defaults to v<version>. Names containing 'internal' are rejected."
+        description: "Verified Java-Chains/chains source tag. Empty = v<version>; any other value must equal v<version>."
         required: false
         type: string
       publish:
@@ -18,11 +18,6 @@ on:
         required: false
         type: boolean
         default: false
-      run_tests:
-        description: "Run full backend (Maven / gate) and frontend (web + web-element) tests before packaging. Default: enabled. When enabled, product mvn does NOT pass -DskipTests."
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -36,17 +31,13 @@ jobs:
     outputs:
       release_version: ${{ steps.meta.outputs.release_version }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
-      source_ref: ${{ steps.meta.outputs.source_ref }}
+      source_ref: ${{ steps.source.outputs.source_ref }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      verification_run_id: ${{ steps.source.outputs.verification_run_id }}
+      verification_run_url: ${{ steps.source.outputs.verification_run_url }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       publish_release: ${{ steps.meta.outputs.publish_release }}
-      run_tests: ${{ steps.meta.outputs.run_tests }}
       docker_tags: ${{ steps.meta.outputs.docker_tags }}
-      chains_dev_jars_repository: ${{ steps.manifest.outputs.chains_dev_jars_repository }}
-      chains_dev_jars_ref: ${{ steps.manifest.outputs.chains_dev_jars_ref }}
-      java_echo_generator_repository: ${{ steps.manifest.outputs.java_echo_generator_repository }}
-      java_echo_generator_ref: ${{ steps.manifest.outputs.java_echo_generator_ref }}
-      java_memshell_generator_repository: ${{ steps.manifest.outputs.java_memshell_generator_repository }}
-      java_memshell_generator_ref: ${{ steps.manifest.outputs.java_memshell_generator_ref }}
       chains_config_repository: ${{ steps.manifest.outputs.chains_config_repository }}
       chains_config_ref: ${{ steps.manifest.outputs.chains_config_ref }}
     steps:
@@ -60,10 +51,9 @@ jobs:
 
       - name: Resolve Release Metadata
         id: meta
-        env:
-          DEPENDENCY_REPO_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
         shell: bash
         run: |
+          set -euo pipefail
           VERSION_INPUT="${{ inputs.version }}"
           VERSION="${VERSION_INPUT#v}"
 
@@ -74,62 +64,6 @@ jobs:
           fi
 
           RELEASE_TAG="v$VERSION"
-          SOURCE_REF="${{ inputs.source_ref }}"
-          if [ -z "$SOURCE_REF" ]; then
-            SOURCE_REF="$RELEASE_TAG"
-          fi
-
-          # Public release: branch/tag only; never commit SHA; never *internal* refs.
-          if [[ "$SOURCE_REF" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
-            echo "source_ref must be a branch or tag name, not a commit SHA: $SOURCE_REF"
-            exit 1
-          fi
-          if [[ "$SOURCE_REF" == refs/* ]] || [[ "$SOURCE_REF" == *".."* ]] || [[ "$SOURCE_REF" == *" "* ]]; then
-            echo "source_ref must be a plain branch or tag name: $SOURCE_REF"
-            exit 1
-          fi
-          SOURCE_REF_LC="$(printf '%s' "$SOURCE_REF" | tr '[:upper:]' '[:lower:]')"
-          if [[ "$SOURCE_REF_LC" == *internal* ]]; then
-            echo "Refusing public Build and Release for internal source_ref: $SOURCE_REF"
-            echo "Use a public branch/tag (e.g. v2-dev), or the internal release workflow."
-            exit 1
-          fi
-          if [ -z "${DEPENDENCY_REPO_TOKEN:-}" ]; then
-            echo "DEPENDENCY_REPO_TOKEN is required to validate source_ref against Java-Chains/chains"
-            exit 1
-          fi
-
-          chmod +x .github/scripts/git-authed.sh
-          CHAINS_URL="https://github.com/Java-Chains/chains.git"
-          set +e
-          LS_REMOTE_ERR="$(mktemp)"
-          REF_LINES="$(.github/scripts/git-authed.sh ls-remote "$CHAINS_URL" \
-            "refs/heads/${SOURCE_REF}" \
-            "refs/tags/${SOURCE_REF}" \
-            "refs/tags/${SOURCE_REF}^{}" 2>"$LS_REMOTE_ERR")"
-          LS_EC=$?
-          set -e
-          if [ "$LS_EC" -ne 0 ] || grep -qiE 'Repository not found|Authentication failed|Invalid username|403|401' "$LS_REMOTE_ERR"; then
-            echo "Cannot read Java-Chains/chains with secrets.DEPENDENCY_REPO_TOKEN (git exit=$LS_EC)."
-            echo "NOT that source_ref is missing — tag/branch push to chains can still be fine."
-            echo "Checklist:"
-            echo "  1) Update Actions secret DEPENDENCY_REPO_TOKEN in ${GITHUB_REPOSITORY}"
-            echo "     (creating a PAT on github.com/settings/tokens does NOT update the secret)."
-            echo "  2) Grant the PAT read access to Java-Chains/chains and every repository in release-manifest.yml."
-            echo "  3) Org may need to approve the fine-grained PAT; SAML SSO may also require authorization."
-            cat "$LS_REMOTE_ERR" >&2 || true
-            rm -f "$LS_REMOTE_ERR"
-            exit 1
-          fi
-          rm -f "$LS_REMOTE_ERR"
-          if [ -z "$(printf '%s' "$REF_LINES" | tr -d '[:space:]')" ]; then
-            echo "source_ref must exist as refs/heads/* or refs/tags/* in Java-Chains/chains: $SOURCE_REF"
-            echo "Commit SHAs and other object ids are not accepted."
-            echo "Verified: DEPENDENCY_REPO_TOKEN can access the repo, but this ref was not found."
-            exit 1
-          fi
-          echo "Validated public source_ref as branch/tag:"
-          printf '%s\n' "$REF_LINES"
 
           if [[ "$VERSION" == *-* ]]; then
             IS_PRERELEASE="true"
@@ -145,21 +79,11 @@ jobs:
             PUBLISH_RELEASE="false"
           fi
 
-          # Default: run full frontend + backend tests (only skip when explicitly false).
-          RUN_TESTS_INPUT="${{ inputs.run_tests }}"
-          if [ "$RUN_TESTS_INPUT" = "false" ]; then
-            RUN_TESTS="false"
-          else
-            RUN_TESTS="true"
-          fi
-
           echo "release_version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
           echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "publish_release=$PUBLISH_RELEASE" >> "$GITHUB_OUTPUT"
-          echo "run_tests=$RUN_TESTS" >> "$GITHUB_OUTPUT"
-          echo "run_tests=$RUN_TESTS publish=$PUBLISH_RELEASE"
+          echo "publish=$PUBLISH_RELEASE"
           {
             echo "docker_tags<<EOF"
             echo "javachains/javachains:${VERSION}"
@@ -168,6 +92,14 @@ jobs:
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Require successful source tag verification
+        id: source
+        env:
+          DEPENDENCY_REPO_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: .github/scripts/verify-source-tag.sh
 
       - name: Read Release Manifest
         id: manifest
@@ -178,12 +110,7 @@ jobs:
 
           manifest = YAML.safe_load(File.read('.github/release-manifest.yml'), aliases: false)
           dependencies = manifest.fetch('dependencies')
-          required = %w[
-            chains_dev_jars
-            java_echo_generator
-            java_memshell_generator
-            chains_config
-          ]
+          required = %w[chains_config]
 
           File.open(ENV.fetch('GITHUB_OUTPUT'), 'a') do |out|
             required.each do |name|
@@ -206,8 +133,8 @@ jobs:
   build:
     needs: resolve_release_meta
     runs-on: ubuntu-latest
-    # gate + frontend tests + package; allow headroom when run_tests=true
-    timeout-minutes: 120
+    # Source tests already passed on the exact private-repo tag; this job packages only.
+    timeout-minutes: 90
     outputs:
       source_sha: ${{ steps.source_revision.outputs.source_sha }}
       frontend_sha: ${{ steps.frontend.outputs.frontend_sha }}
@@ -237,8 +164,14 @@ jobs:
       - name: Capture Source Revision
         id: source_revision
         shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.resolve_release_meta.outputs.source_sha }}
         run: |
-          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          [ "$SOURCE_SHA" = "$EXPECTED_SOURCE_SHA" ] \
+            || { echo "Source SHA changed: expected=$EXPECTED_SOURCE_SHA checkout=$SOURCE_SHA"; exit 1; }
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Resolve Element Frontend Revision
         id: frontend
@@ -256,7 +189,7 @@ jobs:
         shell: bash
         run: |
           EXPECTED_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
-          POM_VERSION=$(sed -n '0,/<version>/s/.*<version>\([^<]*\)<\/version>.*/\1/p' pom.xml | head -n 1)
+          POM_VERSION=$(sed -n 's/.*<version>\([^<]*\)<\/version>.*/\1/p' pom.xml | head -n 1)
 
           if [ -z "$POM_VERSION" ]; then
             echo "Failed to read version from pom.xml"
@@ -272,15 +205,9 @@ jobs:
             exit 1
           fi
 
-      - name: Clone Pinned Dependency Repositories
+      - name: Clone Pinned Runtime Configuration
         env:
           DEPENDENCY_REPO_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
-          CHAINS_DEV_JARS_REPOSITORY: ${{ needs.resolve_release_meta.outputs.chains_dev_jars_repository }}
-          CHAINS_DEV_JARS_REF: ${{ needs.resolve_release_meta.outputs.chains_dev_jars_ref }}
-          JAVA_ECHO_GENERATOR_REPOSITORY: ${{ needs.resolve_release_meta.outputs.java_echo_generator_repository }}
-          JAVA_ECHO_GENERATOR_REF: ${{ needs.resolve_release_meta.outputs.java_echo_generator_ref }}
-          JAVA_MEMSHELL_GENERATOR_REPOSITORY: ${{ needs.resolve_release_meta.outputs.java_memshell_generator_repository }}
-          JAVA_MEMSHELL_GENERATOR_REF: ${{ needs.resolve_release_meta.outputs.java_memshell_generator_ref }}
           CHAINS_CONFIG_REPOSITORY: ${{ needs.resolve_release_meta.outputs.chains_config_repository }}
           CHAINS_CONFIG_REF: ${{ needs.resolve_release_meta.outputs.chains_config_ref }}
         run: |
@@ -302,9 +229,6 @@ jobs:
             echo "Resolved $(git -C "$directory" rev-parse HEAD) for ${repository}"
           }
 
-          clone_repo "$CHAINS_DEV_JARS_REPOSITORY" "release-deps/chains-dev-jars" "$CHAINS_DEV_JARS_REF"
-          clone_repo "$JAVA_ECHO_GENERATOR_REPOSITORY" "release-deps/java-echo-generator" "$JAVA_ECHO_GENERATOR_REF"
-          clone_repo "$JAVA_MEMSHELL_GENERATOR_REPOSITORY" "release-deps/java-memshell-generator" "$JAVA_MEMSHELL_GENERATOR_REF"
           clone_repo "$CHAINS_CONFIG_REPOSITORY" "release-deps/chains-config" "$CHAINS_CONFIG_REF"
 
       - name: Set up Temurin JDK ${{ env.JAVA_VERSION }}
@@ -338,87 +262,10 @@ jobs:
             ${{ runner.os }}-maven-v2-
             ${{ runner.os }}-maven-
 
-      - name: Clone and Install Dev Jars
-        run: |
-          (
-            cd release-deps/chains-dev-jars
-            bash mvn_install.sh
-          )
-
-      - name: Build and Install Generators
-        run: |
-          (
-            cd release-deps/java-echo-generator
-            mvn clean install -DskipTests
-          )
-
-          (
-            cd release-deps/java-memshell-generator
-            mvn clean install -DskipTests
-          )
-
-      # ── Tests (default on via run_tests; set false only for emergency rebuilds) ──
-      - name: Install local deps for backend gate
-        if: needs.resolve_release_meta.outputs.run_tests == 'true'
-        env:
-          CHAINS_DEPS_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -x scripts/ci/install-local-deps.sh ]; then
-            scripts/ci/install-local-deps.sh
-          else
-            echo "WARNING: scripts/ci/install-local-deps.sh missing; relying on release-deps installs"
-          fi
-
-      - name: Frontend tests (java-chains-web-element)
-        if: needs.resolve_release_meta.outputs.run_tests == 'true'
-        working-directory: java-chains-web-element
-        run: |
-          set -euo pipefail
-          pnpm install --frozen-lockfile
-          pnpm typecheck
-          pnpm test:run
-          # Public RMI surface defaults (same checks as chains gate.yml web-element job)
-          if [ -f tests/config/rmi-workbench.test.ts ]; then
-            pnpm exec vitest run tests/config/rmi-workbench.test.ts tests/adapters/rmi-menu-routes.test.ts
-          fi
-
-      - name: Frontend tests (java-chains-web)
-        if: needs.resolve_release_meta.outputs.run_tests == 'true'
-        run: |
-          set -euo pipefail
-          if [ ! -f java-chains-web/package.json ]; then
-            echo "java-chains-web absent; skip"
-            exit 0
-          fi
-          cd java-chains-web
-          npm ci
-          npm run typecheck
-          npm run test
-          if [ -f src/config/internal-features.test.ts ]; then
-            npm test -- --run src/config/internal-features.test.ts
-          fi
-
-      - name: Backend tests (scripts/ci/gate.sh)
-        if: needs.resolve_release_meta.outputs.run_tests == 'true'
-        env:
-          CHAINS_JDK8_HOME: ${{ env.JAVA_HOME }}
-        run: |
-          set -euo pipefail
-          test -x scripts/ci/gate.sh
-          scripts/ci/gate.sh
-
-      - name: Upload surefire reports on test failure
-        if: failure() && needs.resolve_release_meta.outputs.run_tests == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: surefire-reports-release
-          path: '**/target/surefire-reports/**'
-          retention-days: 7
+      - name: Install Source-Tag Build Dependencies
+        run: scripts/ci/install-local-deps.sh
 
       - name: Build Ship Artifacts (Element SPA + CLI)
-        env:
-          RUN_TESTS: ${{ needs.resolve_release_meta.outputs.run_tests }}
         run: |
           set -euo pipefail
           # Product SPA = java-chains-web-element (pnpm → generated-resources/static).
@@ -436,17 +283,56 @@ jobs:
             -am
             clean
             package
-            -Pfrontend,with-exploits
+            -DskipTests
+            -Pfrontend
             "-Dfrontend.working.directory=${PWD}/java-chains-web-element"
             "-Dfrontend.package.script=${PWD}/scripts/frontend/package-java-chains-web-element.sh"
           )
-          if [ "${RUN_TESTS}" = "true" ]; then
-            echo "run_tests=true: product mvn WITHOUT -DskipTests (test phase runs)"
-          else
-            echo "run_tests=false: product mvn WITH -DskipTests (tests skipped)"
-            MVN_ARGS+=(-DskipTests)
-          fi
           mvn "${MVN_ARGS[@]}"
+
+      - name: Verify Public Ship Surface
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
+          SERVER_JAR=""
+          for candidate in \
+            "java-chains-${VERSION}-exec.jar" \
+            "java-chains-server-${VERSION}-exec.jar" \
+            "java-chains-server/target/java-chains-server-${VERSION}-exec.jar" \
+            "java-chains-server/target/java-chains-${VERSION}-exec.jar"
+          do
+            if [ -f "$candidate" ]; then
+              SERVER_JAR="$candidate"
+              break
+            fi
+          done
+          test -f "${SERVER_JAR:-}" || { echo "Public server jar missing"; exit 1; }
+
+          jar tf "$SERVER_JAR" > public-server-contents.txt
+          for internal_jar in java-chains-exploits- java-chains-rmi-rmg-; do
+            if grep -F "BOOT-INF/lib/${internal_jar}" public-server-contents.txt >/dev/null; then
+              echo "Public release embeds internal module: ${internal_jar}"
+              exit 1
+            fi
+          done
+
+          PACKAGED_YML="$(mktemp)"
+          trap 'rm -f "$PACKAGED_YML"' EXIT
+          unzip -p "$SERVER_JAR" BOOT-INF/classes/application.yml > "$PACKAGED_YML"
+          python3 - "$PACKAGED_YML" <<'PY'
+          import re
+          import sys
+
+          text = open(sys.argv[1], encoding="utf-8").read()
+          checks = {
+              "chains.exploits.enabled": r"(?m)^[ \t]*exploits:[ \t]*\n(?:.*?\n)*?[ \t]+enabled:[ \t]*(\S+)",
+              "chains.rmi.workbench.enabled": r"(?m)^[ \t]*rmi:[ \t]*\n(?:.*?\n)*?[ \t]+workbench:[ \t]*\n(?:.*?\n)*?[ \t]+enabled:[ \t]*(\S+)",
+          }
+          for label, pattern in checks.items():
+              match = re.search(pattern, text, flags=re.M | re.S)
+              if not match or match.group(1).strip() != "false":
+                  raise SystemExit(f"{label} must be false in public release jar")
+          PY
 
       - name: Prepare Base Artifacts
         run: |
@@ -579,6 +465,7 @@ jobs:
           RELEASE_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
           SOURCE_REF="${{ needs.resolve_release_meta.outputs.source_ref }}"
           SOURCE_SHA="${{ needs.build.outputs.source_sha }}"
+          VERIFICATION_URL="${{ needs.resolve_release_meta.outputs.verification_run_url }}"
           FRONTEND_SHA="${{ needs.build.outputs.frontend_sha }}"
           IS_PRERELEASE="${{ needs.resolve_release_meta.outputs.is_prerelease }}"
           PUBLISH_RELEASE="${{ needs.resolve_release_meta.outputs.publish_release }}"
@@ -592,8 +479,9 @@ jobs:
           Auto-generated release for version ${RELEASE_VERSION}
 
           Backend repository: Java-Chains/chains
-          Backend ref: ${SOURCE_REF}
+          Verified source tag: ${SOURCE_REF}
           Backend commit: ${SOURCE_SHA}
+          Source test/build evidence: ${VERIFICATION_URL}
 
           Frontend: java-chains-web-element (Vue3 + Element Plus, in-tree)
           Frontend commit: ${FRONTEND_SHA}
