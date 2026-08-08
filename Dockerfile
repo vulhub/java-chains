@@ -1,26 +1,25 @@
 FROM eclipse-temurin:8u432-b06-jdk-jammy
 
-RUN addgroup --system appgroup && adduser --system appuser --ingroup appgroup
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
 
 WORKDIR /chains
 
-ARG TARGETARCH
-
 COPY --chown=appuser:appgroup java-chains.jar /chains/java-chains.jar
 COPY --chown=appuser:appgroup chains-config/ /chains/chains-config/
-COPY --chown=appuser:appgroup mcp-binaries/ /chains/mcp-binaries/
 
-RUN set -eux; \
-    case "${TARGETARCH}" in \
-      "amd64") MCP_BIN="java-chains-mcp-linux-amd64" ;; \
-      "arm64") MCP_BIN="java-chains-mcp-linux-arm64" ;; \
-      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    cp "/chains/mcp-binaries/${MCP_BIN}" /chains/java-chains-mcp; \
-    chmod +x /chains/java-chains-mcp; \
-    ln -sf /chains/java-chains-mcp /usr/local/bin/java-chains-mcp; \
-    rm -rf /chains/mcp-binaries
+# Runtime-writable paths used by FakeMySQL captures / plugins / presets.
+# Bind mounts may overlay chains-config; entrypoint then fixes ownership.
+RUN mkdir -p /chains/chains-config/cache/fake-server-files \
+        /chains/chains-config/plugins \
+        /chains/chains-config/presets \
+        /chains/chains-config/plugin-data \
+    && chown -R appuser:appgroup /chains
 
-USER appuser
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
 
-CMD ["java","-jar","-Xms512m","-Xmx2g","-XX:+UseG1GC","/chains/java-chains.jar"]
+EXPOSE 8011 58080 50389 50388 13999 3308 11527 50000
+
+# Entrypoint starts as root to repair bind-mount permissions, then drops to appuser.
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["java", "-jar", "-Xms512m", "-Xmx2g", "-XX:+UseG1GC", "/chains/java-chains.jar"]

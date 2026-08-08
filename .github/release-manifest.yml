@@ -1,7 +1,14 @@
 schema_version: 1
 
-# 固定正式 release 依赖仓库的源码版本。
-# 只有当对应仓库内容确实变更时，才需要更新这里的 ref。
+# Pin dependency repositories for reproducible product releases.
+# Bump a ref only when that repository's content must change for the release.
+#
+# Naming (2026):
+#   - Backend / packaging monorepo: Java-Chains/chains
+#   - Product SPA: chains/java-chains-web-element (Vue3 + Element Plus, in-tree)
+#     Built with pnpm in release CI, then packaged into the server jar via -Pfrontend
+#     + .github/scripts/package-java-chains-web-element.sh (not React java-chains-web).
+#   - This repository: product release/CI home (java-chains; formerly web-chains)
 dependencies:
   chains_dev_jars:
     repository: Java-Chains/chains-dev-jars

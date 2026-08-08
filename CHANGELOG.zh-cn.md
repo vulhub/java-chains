@@ -1,3 +1,26 @@
+## 2.0.0-beta3
+
+#### 🚀 新增功能
+
+- **链条工作台重写** — React SPA（`java-chains-web`）：默认示例链、模糊搜索 Gadget（驼峰首字母）、URL 分享、Ctrl+Enter 生成、Copy as cURL / CLI。
+- **Canonical `/api`** — Session 登录 + 作用域 API Token（`X-Api-Token`），便于 catalog / chain / generate 自动化。
+- **产品 CLI** — `java-chains-cli` fat jar：远程编排 + 离线本地纯生成；瘦包 `java-chains-cli-remote` 仅远程。
+- **BuiltIn Exploit 工作台** — 默认打进发行包的利用模块（HTTP POST 反序列化、JNDI/Log4j HTTP fuzz 等）。
+- **协议运行时** — JNDI / FakeMySQL / JRMP / TCP / HTTP 统一 ProtocolParseService；SUID 通过 `writeClassDescriptor` 精准替换。
+- **预设链** — 内置 + 用户预设（`chains-config/presets/`），render → generate。
+
+#### 🛠 打包 / 运维
+
+- 发行物为 `java-chains.jar`（内嵌 SPA 的 Spring Boot exec）+ `chains-config`。
+- Docker 镜像不再捆绑 MCP 二进制；仓库根提供 Compose 示例。
+- 需要 OpenJDK / Temurin / Zulu JDK 8（Oracle JDK 8 不推荐，BCEL 相关链可能失败）。
+
+#### ⚠️ 破坏性 / 注意
+
+- 模块更名：server `java-chains-server`、CLI `java-chains-cli`、SDK `java-chains-sdk`、web `java-chains-web`。
+- 发行镜像移除遗留 Go MCP 打包。
+- 关闭鉴权需显式 `CHAINS_ALLOW_AUTH_DISABLED=true` 确认。
+
 ## 1.4.2
 
 #### 🚀 新增功能
