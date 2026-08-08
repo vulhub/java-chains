@@ -1,7 +1,9 @@
 schema_version: 1
 
-# Pin dependency repositories for reproducible product releases.
-# Bump a ref only when that repository's content must change for the release.
+# Pin runtime packaging repositories for reproducible product releases.
+# Build-time dependencies come from the verified source tag's committed
+# scripts/ci/vendor tree via scripts/ci/install-local-deps.sh, exactly as in
+# the upstream Tag Test and Build workflow.
 #
 # Naming (2026):
 #   - Backend / packaging monorepo: Java-Chains/chains
@@ -10,18 +12,6 @@ schema_version: 1
 #     + .github/scripts/package-java-chains-web-element.sh (not React java-chains-web).
 #   - This repository: product release/CI home (java-chains; formerly web-chains)
 dependencies:
-  chains_dev_jars:
-    repository: Java-Chains/chains-dev-jars
-    ref: 7e5a0b57126a31750c52b9ba09580ae63a3e8f0f
-
-  java_echo_generator:
-    repository: Java-Chains/java-echo-generator
-    ref: a5dd7275d50a1f08328d12bd2373ed5d8fe8cc78
-
-  java_memshell_generator:
-    repository: Java-Chains/java-memshell-generator
-    ref: 965c630fa288fd7954dcf68009481d45d5cd81c8
-
   chains_config:
     repository: Java-Chains/chains-config
     ref: c9e027059f82c37df0e026bd190499d2ddc7b223
