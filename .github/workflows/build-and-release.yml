@@ -55,6 +55,10 @@ jobs:
         shell: bash
         run: bash .github/scripts/test-git-authed.sh
 
+      - name: Test Public Ship Surface Verifier
+        shell: bash
+        run: bash .github/scripts/test-public-ship-surface.sh
+
       - name: Resolve Release Metadata
         id: meta
         shell: bash
@@ -332,32 +336,7 @@ jobs:
             fi
           done
           test -f "${SERVER_JAR:-}" || { echo "Public server jar missing"; exit 1; }
-
-          jar tf "$SERVER_JAR" > public-server-contents.txt
-          for internal_jar in java-chains-exploits- java-chains-rmi-rmg-; do
-            if grep -F "BOOT-INF/lib/${internal_jar}" public-server-contents.txt >/dev/null; then
-              echo "Public release embeds internal module: ${internal_jar}"
-              exit 1
-            fi
-          done
-
-          PACKAGED_YML="$(mktemp)"
-          trap 'rm -f "$PACKAGED_YML"' EXIT
-          unzip -p "$SERVER_JAR" BOOT-INF/classes/application.yml > "$PACKAGED_YML"
-          python3 - "$PACKAGED_YML" <<'PY'
-          import re
-          import sys
-
-          text = open(sys.argv[1], encoding="utf-8").read()
-          checks = {
-              "chains.exploits.enabled": r"(?m)^[ \t]*exploits:[ \t]*\n(?:.*?\n)*?[ \t]+enabled:[ \t]*(\S+)",
-              "chains.rmi.workbench.enabled": r"(?m)^[ \t]*rmi:[ \t]*\n(?:.*?\n)*?[ \t]+workbench:[ \t]*\n(?:.*?\n)*?[ \t]+enabled:[ \t]*(\S+)",
-          }
-          for label, pattern in checks.items():
-              match = re.search(pattern, text, flags=re.M | re.S)
-              if not match or match.group(1).strip() != "false":
-                  raise SystemExit(f"{label} must be false in public release jar")
-          PY
+          _release_ci/.github/scripts/verify-public-ship-surface.sh "$SERVER_JAR"
 
       - name: Prepare Base Artifacts
         run: |
