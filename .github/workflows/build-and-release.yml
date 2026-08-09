@@ -22,6 +22,12 @@ on:
 permissions:
   contents: read
 
+# Same prerelease version must not race its release/assets. Stable releases also
+# share the mutable Docker `latest` tag, so serialize all stable versions.
+concurrency:
+  group: release-${{ contains(inputs.version, '-') && format('prerelease-{0}', inputs.version) || 'stable' }}
+  cancel-in-progress: false
+
 jobs:
   # ====================================================
   # Job 0: 解析发布元信息
@@ -149,6 +155,26 @@ jobs:
           ref: ${{ needs.resolve_release_meta.outputs.source_ref }}
           token: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
           fetch-depth: 0
+          # Pull only the Maven reactor, release scripts/config and Element SPA.
+          sparse-checkout: |
+            chains-config
+            java-chains-all
+            java-chains-cli
+            java-chains-cli-remote
+            java-chains-common
+            java-chains-core
+            java-chains-exploit-api
+            java-chains-exploits
+            java-chains-log
+            java-chains-nodes
+            java-chains-plugin-api
+            java-chains-rmi-rmg
+            java-chains-server
+            java-chains-tests
+            java-chains-thirdparty
+            java-chains-tomcat-tests
+            java-chains-web-element
+            scripts
           persist-credentials: false
 
       - name: Checkout Release Packaging Script
@@ -177,6 +203,7 @@ jobs:
         id: frontend
         shell: bash
         run: |
+          set -euo pipefail
           test -f java-chains-web-element/package.json
           test -f java-chains-web-element/pnpm-lock.yaml
           FRONTEND_SHA="$(git log -1 --format=%H -- java-chains-web-element)"
@@ -223,9 +250,12 @@ jobs:
             local ref="$3"
             local url="https://github.com/${repository}.git"
 
-            echo "Cloning ${repository} @ ${ref}"
-            "$AUTHED" clone "$url" "$directory"
-            git -C "$directory" checkout "$ref"
+            echo "Fetching ${repository} @ ${ref} (shallow)"
+            mkdir "$directory"
+            git -C "$directory" init -q
+            git -C "$directory" remote add origin "$url"
+            "$AUTHED" -C "$directory" fetch --depth=1 --no-tags origin "$ref"
+            git -C "$directory" checkout --detach FETCH_HEAD
             echo "Resolved $(git -C "$directory" rev-parse HEAD) for ${repository}"
           }
 
@@ -243,24 +273,18 @@ jobs:
         with:
           maven-version: 3.9.6
 
+      # pnpm must be available before setup-node resolves the pnpm store path.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           # Match chains gate.yml / java-chains-server frontend.node.version
           node-version: '22.12.0'
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.0
-
-      - name: Cache Maven dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-v2-${{ hashFiles('**/pom.xml') }}
-          restore-keys: |
-            ${{ runner.os }}-maven-v2-
-            ${{ runner.os }}-maven-
+          cache: 'pnpm'
+          cache-dependency-path: java-chains-web-element/pnpm-lock.yaml
 
       - name: Install Source-Tag Build Dependencies
         run: scripts/ci/install-local-deps.sh
@@ -279,6 +303,7 @@ jobs:
           # server target/ but a new maven.build.timestamp → Vector A session mismatch.
           # Product surface: server + java-chains-cli (no java-chains-sdk).
           MVN_ARGS=(
+            --threads 1C
             -pl java-chains-server,java-chains-cli
             -am
             clean
@@ -415,7 +440,6 @@ jobs:
         if: always()
         run: |
           rm -rf release-deps
-          rm -rf ~/.m2/repository
 
           if find release_base -type f \( \
             -name "*.java" -o -name "*.go" -o -name "*.ts" -o -name "*.tsx" \
@@ -445,6 +469,9 @@ jobs:
         with:
           name: base-artifacts
           path: release_base/
+          # JARs are already compressed. Store them without another zlib pass;
+          # this upload gates every packaging and Docker job.
+          compression-level: 0
 
   # ====================================================
   # Job 2: Create Release
@@ -633,9 +660,11 @@ jobs:
           RELEASE_TAG="${{ needs.resolve_release_meta.outputs.release_tag }}"
           ASSET_NAME="${{ env.DIST_DIR }}.${{ matrix.ext }}"
           if [ "${{ matrix.ext }}" = "zip" ]; then
-            zip -r -q "$ASSET_NAME" "${{ env.DIST_DIR }}"
+            # JDKs/JARs are already compressed; level 1 avoids wasting CPU for
+            # negligible size savings on the six parallel distribution jobs.
+            zip -r -q -1 "$ASSET_NAME" "${{ env.DIST_DIR }}"
           else
-            tar -czf "$ASSET_NAME" "${{ env.DIST_DIR }}"
+            tar -I 'gzip -1' -cf "$ASSET_NAME" "${{ env.DIST_DIR }}"
           fi
 
           gh release upload "$RELEASE_TAG" "$ASSET_NAME" --clobber --repo "$GITHUB_REPOSITORY"
@@ -658,12 +687,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           RELEASE_TAG="${{ needs.resolve_release_meta.outputs.release_tag }}"
           RELEASE_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
           cd base
-
-          tar -czvf "java-chains-${RELEASE_VERSION}.tar.gz" java-chains.jar chains-config
-          gh release upload "$RELEASE_TAG" "java-chains-${RELEASE_VERSION}.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
 
           mkdir cli_dist
           cp java-chains-cli.jar cli_dist/
@@ -671,15 +698,38 @@ jobs:
           if [ -f java-chains-cli-remote.jar ]; then
             cp java-chains-cli-remote.jar cli_dist/
           fi
-          tar -czvf "java-chains-cli-${RELEASE_VERSION}.tar.gz" -C cli_dist .
-          gh release upload "$RELEASE_TAG" "java-chains-cli-${RELEASE_VERSION}.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
+
+          # These archives are independent. Build both on separate runner cores,
+          # then upload them with one GitHub API call.
+          tar -I 'gzip -1' -cf "java-chains-${RELEASE_VERSION}.tar.gz" \
+            java-chains.jar chains-config &
+          SERVER_ARCHIVE_PID=$!
+          tar -I 'gzip -1' -cf "java-chains-cli-${RELEASE_VERSION}.tar.gz" \
+            -C cli_dist . &
+          CLI_ARCHIVE_PID=$!
+
+          wait "$SERVER_ARCHIVE_PID"
+          wait "$CLI_ARCHIVE_PID"
+
+          gh release upload "$RELEASE_TAG" \
+            "java-chains-${RELEASE_VERSION}.tar.gz" \
+            "java-chains-cli-${RELEASE_VERSION}.tar.gz" \
+            --clobber --repo "$GITHUB_REPOSITORY"
 
   # ====================================================
-  # Job 5: Docker Build
+  # Job 5: Docker Build（每个架构使用独立 runner）
   # ====================================================
   docker_build:
     needs: [ resolve_release_meta, build ]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            suffix: amd64
+          - platform: linux/arm64
+            suffix: arm64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -699,16 +749,107 @@ jobs:
           ls -la
 
       - uses: docker/setup-qemu-action@v3
+        if: matrix.platform == 'linux/arm64'
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - name: Build and push ${{ matrix.platform }} by digest
+        id: docker_build
+        uses: docker/build-push-action@v6
         with:
           file: Dockerfile
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ needs.resolve_release_meta.outputs.docker_tags }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=javachains/javachains,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=java-chains-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=java-chains-${{ matrix.suffix }}
+
+      - name: Export image digest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.docker_build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p /tmp/docker-digests
+          touch "/tmp/docker-digests/${IMAGE_DIGEST#sha256:}"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-digest-${{ matrix.suffix }}
+          path: /tmp/docker-digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ====================================================
+  # Job 6: 合并 Docker 多架构 manifest
+  # ====================================================
+  docker_merge:
+    needs: [ resolve_release_meta, docker_build ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: docker-digest-*
+          path: /tmp/docker-digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Create and verify multi-platform image
+        shell: bash
+        env:
+          DOCKER_TAGS: ${{ needs.resolve_release_meta.outputs.docker_tags }}
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          DIGEST_FILES=(/tmp/docker-digests/*)
+          [ "${#DIGEST_FILES[@]}" -eq 2 ] || {
+            echo "Expected 2 Docker digests, found ${#DIGEST_FILES[@]}"
+            exit 1
+          }
+
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && TAG_ARGS+=(--tag "$tag")
+          done <<< "$DOCKER_TAGS"
+          [ "${#TAG_ARGS[@]}" -gt 0 ] || {
+            echo "No Docker tags resolved"
+            exit 1
+          }
+
+          DIGEST_REFS=()
+          for digest_file in "${DIGEST_FILES[@]}"; do
+            digest="${digest_file##*/}"
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || {
+              echo "Invalid Docker digest file: $digest"
+              exit 1
+            }
+            DIGEST_REFS+=("javachains/javachains@sha256:${digest}")
+          done
+
+          docker buildx imagetools create "${TAG_ARGS[@]}" "${DIGEST_REFS[@]}"
+
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            INSPECT_OUTPUT="$(docker buildx imagetools inspect "$tag")"
+            printf '%s\n' "$INSPECT_OUTPUT"
+            for required_platform in linux/amd64 linux/arm64; do
+              grep -Eq "Platform:[[:space:]]+${required_platform}([[:space:]]|$)" \
+                <<< "$INSPECT_OUTPUT" || {
+                  echo "Docker tag $tag is missing $required_platform"
+                  exit 1
+                }
+            done
+          done <<< "$DOCKER_TAGS"
