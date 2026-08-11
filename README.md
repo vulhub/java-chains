@@ -36,8 +36,6 @@ docker logs -f java-chains | grep -i auth
 
 Open `http://your-ip:8011`
 
-**FakeMySQL read files:** `FakeMySQLReadPayload` asks the **victim JDBC client** to send a path (e.g. `/etc/passwd` on the victim). Chains does **not** open that path inside the container. Captured bytes are written under `chains-config/cache/fake-server-files/` (browse in Studio → FakeMySQL Files). The image entrypoint ensures that cache dir is writable by the non-root `appuser` even when the bind mount was created as root.
-
 ### Docker run
 
 ```bash
@@ -49,7 +47,7 @@ docker run -d \
   -p 3308:3308 -p 13999:13999 -p 50000:50000 -p 11527:11527 \
   -e CHAINS_AUTH=true \
   -e CHAINS_PASS= \
-  javachains/javachains:2.0.0-beta6
+  javachains/javachains:2.0.0-beta7
 ```
 
 Empty `CHAINS_PASS` → a random password is generated at startup (see the `Auth` line in logs).  
@@ -60,8 +58,8 @@ Empty `CHAINS_PASS` → a random password is generated at startup (see the `Auth
 Requires **OpenJDK / Temurin / Zulu JDK 8** (Oracle JDK 8 is not recommended for BCEL chains).
 
 ```bash
-tar -xzf java-chains-2.0.0-beta6.tar.gz
-cd java-chains-2.0.0-beta6   # or unpack layout with java-chains.jar + chains-config/
+tar -xzf java-chains-2.0.0-beta7.tar.gz
+cd java-chains-2.0.0-beta7   # or unpack layout with java-chains.jar + chains-config/
 java -jar java-chains.jar
 ```
 
@@ -80,15 +78,6 @@ java -jar java-chains-cli.jar generate \
 java -jar java-chains-cli.jar generate --execution local \
   --payload JavaNativePayload --chain CommonsBeanutils1 --arg cmd=id --encode base64 --json
 ```
-
-## Release artifacts
-
-| Artifact | Contents |
-|---|---|
-| `java-chains-<ver>.tar.gz` | Server fat jar (SPA embedded) + `chains-config` |
-| `java-chains-<ver>-<platform>.*` | Same + bundled JDK 8 |
-| `java-chains-cli-<ver>.tar.gz` | Product CLI fat jar + `chains-config` |
-| Docker `javachains/javachains:<ver>` | Server image |
 
 ## Changelog
 

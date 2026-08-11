@@ -36,8 +36,6 @@ docker logs -f java-chains | grep -i auth
 
 打开 `http://your-ip:8011`
 
-**FakeMySQL 读文件：** `FakeMySQLReadPayload` 让**受害端 JDBC 客户端**去读你配置的路径（例如受害者机器上的 `/etc/passwd`），**不是**在容器内打开该路径。读回内容落在 `chains-config/cache/fake-server-files/`（Studio → FakeMySQL 文件）。镜像 entrypoint 会保证非 root 的 `appuser` 即使在 root 创建的 bind mount 下也能写入该缓存目录。
-
 ### Docker run
 
 ```bash
@@ -49,7 +47,7 @@ docker run -d \
   -p 3308:3308 -p 13999:13999 -p 50000:50000 -p 11527:11527 \
   -e CHAINS_AUTH=true \
   -e CHAINS_PASS= \
-  javachains/javachains:2.0.0-beta6
+  javachains/javachains:2.0.0-beta7
 ```
 
 `CHAINS_PASS` 为空时启动会随机生成密码，见日志中的 `Auth` 行。  
@@ -60,8 +58,8 @@ docker run -d \
 需要 **OpenJDK / Temurin / Zulu JDK 8**（Oracle JDK 8 不推荐，BCEL 相关链可能失败）。
 
 ```bash
-tar -xzf java-chains-2.0.0-beta6.tar.gz
-cd java-chains-2.0.0-beta6   # 或解压后目录内含 java-chains.jar + chains-config/
+tar -xzf java-chains-2.0.0-beta7.tar.gz
+cd java-chains-2.0.0-beta7   # 或解压后目录内含 java-chains.jar + chains-config/
 java -jar java-chains.jar
 ```
 
@@ -80,15 +78,6 @@ java -jar java-chains-cli.jar generate \
 java -jar java-chains-cli.jar generate --execution local \
   --payload JavaNativePayload --chain CommonsBeanutils1 --arg cmd=id --encode base64 --json
 ```
-
-## 发行产物
-
-| 产物 | 内容 |
-|---|---|
-| `java-chains-<ver>.tar.gz` | Server fat jar（内嵌 SPA）+ `chains-config` |
-| `java-chains-<ver>-<platform>.*` | 同上 + 内嵌 JDK 8 |
-| `java-chains-cli-<ver>.tar.gz` | 产品 CLI fat jar + `chains-config` |
-| Docker `javachains/javachains:<ver>` | Server 镜像 |
 
 ## 更新内容
 
