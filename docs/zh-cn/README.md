@@ -1,4 +1,4 @@
-<h4 align="right">English | <strong><a href="./docs/zh-cn/README.md">简体中文</a></strong></h4>
+<h4 align="right"><strong><a href="../../README.md">English</a></strong> | 简体中文</h4>
 <h1 align="center">Java Chains</h1>
 <div align="center">
 <img alt="downloads" src="https://img.shields.io/github/downloads/vulhub/java-chains/total"/>
@@ -8,48 +8,48 @@
 </a>
 <img alt="GitHub Stars" src="https://img.shields.io/github/stars/vulhub/java-chains?color=success"/>
 <div align="center">
-    <img src="./img/logo.png" width="60" alt="center">
+    <img src="../../img/logo.png" width="60" alt="center">
 </div>
 </div>
 
-`Java-Chains` is a Java payload generation platform for security researchers. Its web interface supports common Java payload generation and JNDI, FakeMySQL, and JRMP testing.
+`Java-Chains` 是面向安全研究员的 Java Payload 生成平台，通过 Web 界面支持常见 Java Payload 生成，以及 JNDI、FakeMySQL 和 JRMP 测试。
 
-> Standing on the shoulders of giants
+> 站在巨人肩膀上
 
 <p align="center">
   <img src="./img/main.png" />
 </p>
 
-## Quick start
+## 快速开始
 
-Docs: https://java-chains.github.io/en/docs/guide
+文档：https://java-chains.github.io/docs/guide
 
-Plugin development reference: https://github.com/Java-Chains/chains-plugin-demo
+插件开发参考仓库：https://github.com/Java-Chains/chains-plugin-demo
 
 ### Docker Compose
 
 ```bash
-# Extract the release package and place its chains-config directory next to docker-compose.yml
-# If chains-config is empty, the container will start but cannot access the image's bundled configuration and plugins
+# 建议先解压发布包，再将其中的 chains-config 文件夹放到 docker-compose.yml 所在目录
+# 如果 chains-config 文件夹为空，容器仍能启动，但无法读取镜像中预置的配置和插件
 docker compose up -d
-# After startup, find the login credentials on the "Auth" line in the logs
+# 启动后，可在日志的 "Auth" 行查看登录账号和密码
 docker logs -f java-chains | grep -i auth
 ```
 
-Open `http://your-ip:8011`
+打开 `http://your-ip:8011`
 
 ### Docker run
 
-| Port | Purpose |
+| 端口 | 用途 |
 | --- | --- |
-| `8011` | Web interface |
-| `58080` | JNDI HTTP service |
-| `50389` | JNDI LDAP service |
-| `50388` | JNDI RMI service |
-| `3308` | FakeMySQL service |
-| `13999` | JRMP Listener service |
-| `50000` | HTTP service |
-| `11527` | TCP service |
+| `8011` | Web 管理界面 |
+| `58080` | JNDI HTTP 服务 |
+| `50389` | JNDI LDAP 服务 |
+| `50388` | JNDI RMI 服务 |
+| `3308` | FakeMySQL 服务 |
+| `13999` | JRMP Listener 服务 |
+| `50000` | HTTP 服务 |
+| `11527` | TCP 服务 |
 
 ```bash
 docker run -d \
@@ -68,26 +68,27 @@ docker run -d \
   javachains/javachains:2.0.0-beta7
 ```
 
-Empty `CHAINS_PASS` → a random password is generated at startup (see the `Auth` line in logs).  
-`CHAINS_AUTH=false` also requires `CHAINS_ALLOW_AUTH_DISABLED=true` (explicit acknowledgement).
+`CHAINS_PASS` 为空时启动会随机生成密码，见日志中的 `Auth` 行。
 
-### Jar
+`CHAINS_AUTH=false` 时还需显式设置 `CHAINS_ALLOW_AUTH_DISABLED=true`。
 
-Requires **OpenJDK / Temurin / Zulu JDK 8** (Oracle JDK 8 is not recommended for BCEL chains).
+### Jar 启动
+
+需要 **OpenJDK / Temurin / Zulu JDK 8**（Oracle JDK 8 不推荐，BCEL 相关链可能失败）。
 
 ```bash
 tar -xzf java-chains-2.0.0-beta7.tar.gz
-cd java-chains-2.0.0-beta7   # or unpack layout with java-chains.jar + chains-config/
+cd java-chains-2.0.0-beta7   # 或解压后目录内含 java-chains.jar + chains-config/
 java -jar java-chains.jar
 ```
 
-## References and acknowledgments
+## 参考和致谢
 
-For personal research and learning only. Never use for illegal activity.
+仅支持个人研究学习，切勿用于非法犯罪活动。
 
-The developers, providers and maintainers are not responsible for actions or consequences of using this tool; users assume all risk.
+本项目的开发者、提供者和维护者不对使用者使用工具的行为和后果负责，工具的使用者应自行承担风险。
 
-Acknowledgments:
+参考致谢：
 
 - https://github.com/ReaJason/MemShellParty
 - https://github.com/wh1t3p1g/ysomap
@@ -109,6 +110,6 @@ Acknowledgments:
 - https://xz.aliyun.com/t/5381
 - http://rui0.cn/archives/1408
 
-## Communication
+## 交流
 
-If you have any questions, please open an issue or join [Discord](https://discord.gg/ukC8KTrRXv).
+有问题请开 Issue，或加入 [Discord](https://discord.gg/ukC8KTrRXv)。
