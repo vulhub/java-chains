@@ -544,10 +544,6 @@ jobs:
             arch_api: x64
             suffix: windows-amd64
             ext: zip
-          - os_api: windows
-            arch_api: arm64
-            suffix: windows-arm64
-            ext: zip
           - os_api: mac
             arch_api: x64
             suffix: macos-intel
@@ -570,9 +566,6 @@ jobs:
           USE_AZUL="false"
           if [ "${{ matrix.os_api }}" = "mac" ] && [ "${{ matrix.arch_api }}" = "aarch64" ]; then
             USE_AZUL="true"
-          fi
-          if [ "${{ matrix.os_api }}" = "windows" ] && [ "${{ matrix.arch_api }}" = "arm64" ]; then
-            API_URL="https://api.adoptium.net/v3/binary/latest/8/ga/windows/x64/jdk/hotspot/normal/eclipse"
           fi
 
           if [ "$USE_AZUL" = "true" ]; then
@@ -640,7 +633,7 @@ jobs:
           ASSET_NAME="${{ env.DIST_DIR }}.${{ matrix.ext }}"
           if [ "${{ matrix.ext }}" = "zip" ]; then
             # JDKs/JARs are already compressed; level 1 avoids wasting CPU for
-            # negligible size savings on the six parallel distribution jobs.
+            # negligible size savings on the parallel distribution jobs.
             zip -r -q -1 "$ASSET_NAME" "${{ env.DIST_DIR }}"
           else
             tar -I 'gzip -1' -cf "$ASSET_NAME" "${{ env.DIST_DIR }}"
