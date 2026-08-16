@@ -50,7 +50,7 @@ assert_output "verification_artifact=tag-build-$RUN_ID"
 echo "PASS: annotated source tag resolves to verified commit"
 
 write_success_fixtures
-if TEST_SOURCE_REF="v2-dev" run_verifier >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"; then
+if TEST_SOURCE_REF="main" run_verifier >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"; then
   fail "branch source_ref should be rejected"
 fi
 grep -F "source_ref must equal the release tag" "$TMP_DIR/stderr" >/dev/null \
