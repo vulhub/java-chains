@@ -74,6 +74,28 @@ mvn -B -pl java-chains-server -am \
   -Dsurefire.failIfNoSpecifiedTests=false \
   test
 
+# Tagged Element packager looks for @rollup+rollup-linux-x64@, but pnpm installs
+# @rollup+rollup-linux-x64-gnu@. Patch the working tree only; source SHA is unchanged.
+ELEMENT_PACK="$SOURCE_DIR/scripts/frontend/package-java-chains-web-element.sh"
+if [ -f "$ELEMENT_PACK" ]; then
+  note "accept linux-x64-gnu rollup optional packages"
+  python3 - "$ELEMENT_PACK" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+old = "const prefixes = ['@rollup+rollup-' + plat + '@', '@esbuild+' + plat + '@'];"
+new = "const prefixes = ['@rollup+rollup-' + plat, '@esbuild+' + plat];"
+if old not in text:
+    raise SystemExit(
+        "package-public-from-source: Element native-dep check not found; "
+        "refusing to package"
+    )
+path.write_text(text.replace(old, new, 1))
+PY
+fi
+
 note "package public edition (-Pfrontend only)"
 mvn -B --threads 1C -pl java-chains-server,java-chains-cli -am clean package \
   -DskipTests \
