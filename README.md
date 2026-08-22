@@ -112,3 +112,7 @@ Acknowledgments:
 ## Communication
 
 If you have any questions, please open an issue or join [Discord](https://discord.gg/ukC8KTrRXv).
+
+## Star History
+
+[![Star History Chart](https://star-history.dera.page/svg?repos=vulhub/java-chains&type=Date)](https://star-history.dera.page/#vulhub/java-chains&Date)

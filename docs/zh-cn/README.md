@@ -113,3 +113,7 @@ java -jar java-chains.jar
 ## 交流
 
 有问题请开 Issue，或加入 [Discord](https://discord.gg/ukC8KTrRXv)。
+
+## Star History
+
+[![Star History Chart](https://star-history.dera.page/svg?repos=vulhub/java-chains&type=Date)](https://star-history.dera.page/#vulhub/java-chains&Date)
