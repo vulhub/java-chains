@@ -2,14 +2,15 @@ schema_version: 1
 
 # Pin runtime packaging repositories for reproducible product releases.
 #
-# Product bits come from the verified Java-Chains/chains GitHub Release asset
-# `tag-build.tar.gz` (public edition, profiles=frontend, both SPAs already baked
-# into the server jar). This repository only overlays pinned chains-config,
-# bundles JDK 8, and pushes Docker. Do not rebuild with Maven.
+# Product bits are built in this repository from the Java-Chains/chains source
+# tag: public-edition source/unit checks, then `mvn -Pfrontend` for server +
+# both SPAs + CLI. This repository overlays pinned chains-config, bundles JDK 8,
+# and (when publish=true) pushes Docker. Do not enable with-exploits or
+# with-rmi-workbench.
 #
 # Naming (2026):
 #   - Backend / packaging monorepo: Java-Chains/chains
-#   - Product SPAs: baked into the tagged public jar (React at `/`, Element at `/element/`)
+#   - Product SPAs: built from that source tag (React at `/`, Element at `/element/`)
 #   - This repository: public product release/CI home (vulhub/java-chains)
 dependencies:
   chains_config:

@@ -1,7 +1,7 @@
 # Public product release CI for vulhub/java-chains.
-# Consumes the verified public `tag-build.tar.gz` from Java-Chains/chains.
-# Packages only: overlay pinned chains-config, bundle JDK 8, push Docker.
-# Actions artifacts are not used (storage quota).
+# Checks out the Java-Chains/chains source tag, runs public-edition tests,
+# packages with -Pfrontend, then overlays pinned chains-config and bundles JDK 8.
+# Docker Hub is pushed only when publish=true. Actions artifacts are not used.
 name: Build and Release
 
 on:
@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       source_ref:
-        description: "Verified Java-Chains/chains source tag. Empty = v<version>; any other value must equal v<version>."
+        description: "Java-Chains/chains source tag. Empty = v<version>; any other value must equal v<version>."
         required: false
         type: string
       publish:
@@ -38,8 +38,7 @@ jobs:
       release_tag: ${{ steps.meta.outputs.release_tag }}
       source_ref: ${{ steps.source.outputs.source_ref }}
       source_sha: ${{ steps.source.outputs.source_sha }}
-      verification_run_id: ${{ steps.source.outputs.verification_run_id }}
-      verification_run_url: ${{ steps.source.outputs.verification_run_url }}
+      packaging_run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       publish_release: ${{ steps.meta.outputs.publish_release }}
       docker_tags: ${{ steps.meta.outputs.docker_tags }}
@@ -57,6 +56,7 @@ jobs:
           bash .github/scripts/test-git-authed.sh
           bash .github/scripts/test-public-ship-surface.sh
           bash .github/scripts/test-verify-source-tag.sh
+          bash .github/scripts/test-package-public-from-source-contract.sh
           bash .github/scripts/test-fetch-release-tarball.sh
           bash .github/scripts/test-verify-tag-build-artifact.sh
           bash .github/scripts/test-public-release-workflow-contract.sh
@@ -105,13 +105,13 @@ jobs:
           {
             echo "docker_tags<<EOF"
             echo "javachains/javachains:${VERSION}"
-            if [ "$IS_PRERELEASE" != "true" ]; then
+            if [ "$IS_PRERELEASE" != "true" ] && [ "$PUBLISH_RELEASE" = "true" ]; then
               echo "javachains/javachains:latest"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Require successful source tag verification
+      - name: Resolve public source tag
         id: source
         env:
           DEPENDENCY_REPO_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
@@ -147,9 +147,9 @@ jobs:
 
   build:
     needs: resolve_release_meta
-    name: prepare verified public artifacts
+    name: package public edition from source tag
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 90
     outputs:
       source_sha: ${{ steps.evidence.outputs.source_sha }}
       frontend_sha: ${{ steps.evidence.outputs.frontend_sha }}
@@ -160,14 +160,48 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Fetch verified tagged build from source GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
-          CHAINS_RELEASE_TAG: ${{ needs.resolve_release_meta.outputs.source_ref }}
-          CHAINS_RELEASE_REPO: Java-Chains/chains
-        run: .github/scripts/fetch-release-tarball.sh tag-build.tar.gz tagged-build
+      - name: Checkout public source tag
+        uses: actions/checkout@v4
+        with:
+          repository: Java-Chains/chains
+          ref: ${{ needs.resolve_release_meta.outputs.source_ref }}
+          token: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
+          path: source
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
 
-      - name: Verify tagged public build evidence
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: maven
+          cache-dependency-path: source/pom.xml
+
+      - uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: 3.9.6
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: pnpm
+          cache-dependency-path: source/java-chains-web-element/pnpm-lock.yaml
+
+      - name: Test and package public edition
+        env:
+          SOURCE_DIR: source
+          OUTPUT_DIR: tagged-build
+          EXPECTED_VERSION: ${{ needs.resolve_release_meta.outputs.release_version }}
+          EXPECTED_TAG: ${{ needs.resolve_release_meta.outputs.source_ref }}
+          SOURCE_SHA: ${{ needs.resolve_release_meta.outputs.source_sha }}
+        run: .github/scripts/package-public-from-source.sh
+
+      - name: Verify packaged public build evidence
         id: evidence
         shell: bash
         env:
@@ -282,7 +316,7 @@ jobs:
           RELEASE_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
           SOURCE_REF="${{ needs.resolve_release_meta.outputs.source_ref }}"
           SOURCE_SHA="${{ needs.build.outputs.source_sha }}"
-          VERIFICATION_URL="${{ needs.resolve_release_meta.outputs.verification_run_url }}"
+          PACKAGING_URL="${{ needs.resolve_release_meta.outputs.packaging_run_url }}"
           FRONTEND_SHA="${{ needs.build.outputs.frontend_sha }}"
           FRONTEND_REACT_SHA="${{ needs.build.outputs.frontend_react_sha }}"
           FRONTEND_ELEMENT_SHA="${{ needs.build.outputs.frontend_element_sha }}"
@@ -294,11 +328,11 @@ jobs:
           Auto-generated public release for version ${RELEASE_VERSION}
 
           Backend repository: Java-Chains/chains
-          Verified source tag: ${SOURCE_REF}
+          Source tag: ${SOURCE_REF}
           Backend commit: ${SOURCE_SHA}
-          Source test/build evidence: ${VERIFICATION_URL}
+          Packaged in this workflow from the source tag (public-edition tests + \`-Pfrontend\`): ${PACKAGING_URL}
 
-          Frontend: dual SPA from the verified tagged build (React at \`/\`, Element at \`/element/\`)
+          Frontend: dual SPA built from the source tag (React at \`/\`, Element at \`/element/\`)
           Frontend commit (default React SPA): ${FRONTEND_SHA}
           Frontend commit (React): ${FRONTEND_REACT_SHA}
           Frontend commit (Element): ${FRONTEND_ELEMENT_SHA}
@@ -520,6 +554,7 @@ jobs:
             --clobber --repo "$GITHUB_REPOSITORY"
 
   docker_build:
+    if: needs.resolve_release_meta.outputs.publish_release == 'true'
     needs: [ resolve_release_meta, build ]
     runs-on: ubuntu-latest
     strategy:
@@ -583,6 +618,7 @@ jobs:
           gh release upload "$RELEASE_TAG" "$DIGEST_FILE" --clobber --repo "$GITHUB_REPOSITORY"
 
   docker_merge:
+    if: needs.resolve_release_meta.outputs.publish_release == 'true'
     needs: [ resolve_release_meta, docker_build ]
     runs-on: ubuntu-latest
     steps:
