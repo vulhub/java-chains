@@ -93,23 +93,25 @@ RUN_URL="$(jq -r --argjson id "$RUN_ID" '
 [ -n "$RUN_URL" ] && [ "$RUN_URL" != "null" ] \
   || die "verified workflow run is missing html_url: $RUN_ID"
 
-ARTIFACTS_FILE="${CHAINS_WORKFLOW_ARTIFACTS_FILE:-${TMP_DIR}/workflow-artifacts.json}"
-if [ -z "${CHAINS_WORKFLOW_ARTIFACTS_FILE:-}" ]; then
+ASSETS_FILE="${CHAINS_RELEASE_ASSETS_FILE:-${TMP_DIR}/release-assets.json}"
+if [ -z "${CHAINS_RELEASE_ASSETS_FILE:-}" ]; then
+  [ -n "${DEPENDENCY_REPO_TOKEN:-}" ] \
+    || die "DEPENDENCY_REPO_TOKEN is required to read the source GitHub Release"
   if ! GH_TOKEN="$DEPENDENCY_REPO_TOKEN" gh api --method GET \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
-    "repos/${CHAINS_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" \
-    -f per_page=100 > "$ARTIFACTS_FILE"; then
-    die "cannot read artifacts for upstream workflow run: $RUN_ID"
+    "repos/${CHAINS_REPOSITORY}/releases/tags/${SOURCE_REF}" \
+    > "$ASSETS_FILE"; then
+    die "cannot read GitHub Release for $SOURCE_REF on $CHAINS_REPOSITORY"
   fi
 fi
 
-ARTIFACT_NAME="tag-build-${RUN_ID}"
-ARTIFACT_COUNT="$(jq -r --arg name "$ARTIFACT_NAME" '
-  [.artifacts[]? | select(.name == $name and .expired == false)] | length
-' "$ARTIFACTS_FILE")"
-[ "$ARTIFACT_COUNT" = "1" ] \
-  || die "verified run must have one unexpired artifact named $ARTIFACT_NAME"
+ASSET_NAME="tag-build.tar.gz"
+ASSET_COUNT="$(jq -r --arg name "$ASSET_NAME" '
+  [.assets[]? | select(.name == $name and (.state == "uploaded" or .state == null))] | length
+' "$ASSETS_FILE")"
+[ "$ASSET_COUNT" = "1" ] \
+  || die "verified source Release must include uploaded asset $ASSET_NAME"
 
 if [ -n "$OUTPUT_FILE" ]; then
   {
@@ -117,8 +119,8 @@ if [ -n "$OUTPUT_FILE" ]; then
     echo "source_sha=$SOURCE_SHA"
     echo "verification_run_id=$RUN_ID"
     echo "verification_run_url=$RUN_URL"
-    echo "verification_artifact=$ARTIFACT_NAME"
+    echo "verification_artifact=$ASSET_NAME"
   } >> "$OUTPUT_FILE"
 fi
 
-echo "verified-source-tag: tag=$SOURCE_REF sha=$SOURCE_SHA run=$RUN_ID artifact=$ARTIFACT_NAME"
+echo "verified-source-tag: tag=$SOURCE_REF sha=$SOURCE_SHA run=$RUN_ID asset=$ASSET_NAME"

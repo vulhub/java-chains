@@ -26,6 +26,16 @@ for internal_jar in java-chains-exploits- java-chains-rmi-rmg-; do
   fi
 done
 
+for internal_class in \
+  "BOOT-INF/classes/org/vulhub/javachains/web/adapter/canonical/controller/CanonicalRmiController.class" \
+  "BOOT-INF/classes/org/vulhub/javachains/web/adapter/canonical/controller/CanonicalExploitsController.class" \
+  "BOOT-INF/classes/org/vulhub/javachains/internal/tools/CanonicalInternalToolsController.class"
+do
+  if grep -Fx "$internal_class" "$CONTENTS_FILE" >/dev/null; then
+    die "public release contains internal class: ${internal_class}"
+  fi
+done
+
 unzip -p "$SERVER_JAR" BOOT-INF/classes/application.yml > "$APPLICATION_YML" \
   || die "packaged application.yml is missing"
 

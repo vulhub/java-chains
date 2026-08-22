@@ -1,12 +1,14 @@
-# Product release CI (java-chains release repo; formerly web-chains).
-# Backend: Java-Chains/chains | SPA: in-tree java-chains-web-element (Vue Element Plus)
+# Public product release CI for vulhub/java-chains.
+# Consumes the verified public `tag-build.tar.gz` from Java-Chains/chains.
+# Packages only: overlay pinned chains-config, bundle JDK 8, push Docker.
+# Actions artifacts are not used (storage quota).
 name: Build and Release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version without leading v (e.g. 2.0.0-beta3)"
+        description: "Public release version without leading v (e.g. 2.0.0-beta3). Must not contain internal."
         required: true
         type: string
       source_ref:
@@ -20,7 +22,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
 
 # Same prerelease version must not race its release/assets. Stable releases also
 # share the mutable Docker `latest` tag, so serialize all stable versions.
@@ -29,9 +31,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ====================================================
-  # Job 0: 解析发布元信息
-  # ====================================================
   resolve_release_meta:
     runs-on: ubuntu-latest
     outputs:
@@ -51,13 +50,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Test Git Authentication Wrapper
+      - name: Test public release contracts
         shell: bash
-        run: bash .github/scripts/test-git-authed.sh
-
-      - name: Test Public Ship Surface Verifier
-        shell: bash
-        run: bash .github/scripts/test-public-ship-surface.sh
+        run: |
+          set -euo pipefail
+          bash .github/scripts/test-git-authed.sh
+          bash .github/scripts/test-public-ship-surface.sh
+          bash .github/scripts/test-verify-source-tag.sh
+          bash .github/scripts/test-fetch-release-tarball.sh
+          bash .github/scripts/test-verify-tag-build-artifact.sh
+          bash .github/scripts/test-public-release-workflow-contract.sh
 
       - name: Resolve Release Metadata
         id: meta
@@ -70,6 +72,12 @@ jobs:
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid version: $VERSION_INPUT"
             echo "Use SemVer, for example: 2.0.0 or 2.0.0-beta3"
+            exit 1
+          fi
+
+          VERSION_LC="$(printf '%s' "$VERSION" | tr '[:upper:]' '[:lower:]')"
+          if [[ "$VERSION_LC" == *internal* ]]; then
+            echo "public version must not contain internal: $VERSION"
             exit 1
           fi
 
@@ -137,367 +145,194 @@ jobs:
           end
           RUBY
 
-  # ====================================================
-  # Job 1: 核心构建（适配 v2 模块与发行物）
-  # ====================================================
   build:
     needs: resolve_release_meta
+    name: prepare verified public artifacts
     runs-on: ubuntu-latest
-    # Source tests already passed on the exact private-repo tag; this job packages only.
-    timeout-minutes: 90
+    timeout-minutes: 20
     outputs:
-      source_sha: ${{ steps.source_revision.outputs.source_sha }}
-      frontend_sha: ${{ steps.frontend.outputs.frontend_sha }}
-    env:
-      JAVA_VERSION: '8'
-
+      source_sha: ${{ steps.evidence.outputs.source_sha }}
+      frontend_sha: ${{ steps.evidence.outputs.frontend_sha }}
+      frontend_react_sha: ${{ steps.evidence.outputs.frontend_react_sha }}
+      frontend_element_sha: ${{ steps.evidence.outputs.frontend_element_sha }}
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          repository: Java-Chains/chains
-          ref: ${{ needs.resolve_release_meta.outputs.source_ref }}
-          token: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
-          fetch-depth: 0
-          # Pull only the Maven reactor, release scripts/config and Element SPA.
-          sparse-checkout: |
-            chains-config
-            java-chains-all
-            java-chains-cli
-            java-chains-cli-remote
-            java-chains-common
-            java-chains-core
-            java-chains-exploit-api
-            java-chains-exploits
-            java-chains-log
-            java-chains-nodes
-            java-chains-plugin-api
-            java-chains-rmi-rmg
-            java-chains-server
-            java-chains-tests
-            java-chains-thirdparty
-            java-chains-tomcat-tests
-            java-chains-web-element
-            scripts
           persist-credentials: false
 
-      - name: Checkout Release Packaging Script
-        uses: actions/checkout@v4
-        with:
-          path: _release_ci
-          sparse-checkout: |
-            .github/scripts
-          sparse-checkout-cone-mode: false
-          clean: false
-          persist-credentials: false
+      - name: Fetch verified tagged build from source GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
+          CHAINS_RELEASE_TAG: ${{ needs.resolve_release_meta.outputs.source_ref }}
+          CHAINS_RELEASE_REPO: Java-Chains/chains
+        run: .github/scripts/fetch-release-tarball.sh tag-build.tar.gz tagged-build
 
-      - name: Capture Source Revision
-        id: source_revision
+      - name: Verify tagged public build evidence
+        id: evidence
         shell: bash
         env:
+          TAG_BUILD_DIR: tagged-build
+          EXPECTED_TAG: ${{ needs.resolve_release_meta.outputs.source_ref }}
           EXPECTED_SOURCE_SHA: ${{ needs.resolve_release_meta.outputs.source_sha }}
+          EXPECTED_VERSION: ${{ needs.resolve_release_meta.outputs.release_version }}
+          EXPECTED_EDITION: public
+          EXPECTED_PROFILES: frontend
+        run: .github/scripts/verify-tag-build-artifact.sh
+
+      - name: Reject internal sidecar layout
         run: |
           set -euo pipefail
-          SOURCE_SHA="$(git rev-parse HEAD)"
-          [ "$SOURCE_SHA" = "$EXPECTED_SOURCE_SHA" ] \
-            || { echo "Source SHA changed: expected=$EXPECTED_SOURCE_SHA checkout=$SOURCE_SHA"; exit 1; }
-          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve Element Frontend Revision
-        id: frontend
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f java-chains-web-element/package.json
-          test -f java-chains-web-element/pnpm-lock.yaml
-          FRONTEND_SHA="$(git log -1 --format=%H -- java-chains-web-element)"
-          FRONTEND_CT="$(git log -1 --format=%ct -- java-chains-web-element)"
-          echo "frontend_sha=${FRONTEND_SHA}" >> "$GITHUB_OUTPUT"
-          echo "SOURCE_DATE_EPOCH=${FRONTEND_CT}" >> "$GITHUB_ENV"
-          echo "Using in-tree java-chains-web-element @ ${FRONTEND_SHA}"
-
-      - name: Validate Source Version
-        shell: bash
-        run: |
-          EXPECTED_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
-          POM_VERSION=$(sed -n 's/.*<version>\([^<]*\)<\/version>.*/\1/p' pom.xml | head -n 1)
-
-          if [ -z "$POM_VERSION" ]; then
-            echo "Failed to read version from pom.xml"
+          if [ -e tagged-build/lib ]; then
+            echo "Public tagged build must not include tagged-build/lib"
+            find tagged-build/lib -type f | sort
             exit 1
           fi
-
-          if [ "$POM_VERSION" != "$EXPECTED_VERSION" ]; then
-            echo "Version mismatch:"
-            echo "  source_ref: ${{ needs.resolve_release_meta.outputs.source_ref }}"
-            echo "  pom.xml:    $POM_VERSION"
-            echo "  input:      $EXPECTED_VERSION"
-            echo "Please bump/tag the source repo first, or pass the correct source_ref."
-            exit 1
-          fi
-
-      - name: Clone Pinned Runtime Configuration
-        env:
-          DEPENDENCY_REPO_TOKEN: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
-          CHAINS_CONFIG_REPOSITORY: ${{ needs.resolve_release_meta.outputs.chains_config_repository }}
-          CHAINS_CONFIG_REF: ${{ needs.resolve_release_meta.outputs.chains_config_ref }}
-        run: |
-          set -euo pipefail
-          mkdir -p release-deps
-          AUTHED="_release_ci/.github/scripts/git-authed.sh"
-          test -f "$AUTHED" || AUTHED=".github/scripts/git-authed.sh"
-          chmod +x "$AUTHED"
-
-          clone_repo() {
-            local repository="$1"
-            local directory="$2"
-            local ref="$3"
-            local url="https://github.com/${repository}.git"
-
-            echo "Fetching ${repository} @ ${ref} (shallow)"
-            mkdir "$directory"
-            git -C "$directory" init -q
-            git -C "$directory" remote add origin "$url"
-            "$AUTHED" -C "$directory" fetch --depth=1 --no-tags origin "$ref"
-            git -C "$directory" checkout --detach FETCH_HEAD
-            echo "Resolved $(git -C "$directory" rev-parse HEAD) for ${repository}"
-          }
-
-          clone_repo "$CHAINS_CONFIG_REPOSITORY" "release-deps/chains-config" "$CHAINS_CONFIG_REF"
-
-      - name: Set up Temurin JDK ${{ env.JAVA_VERSION }}
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: 'maven'
-
-      - name: Set up Maven
-        uses: stCarolas/setup-maven@v5
-        with:
-          maven-version: 3.9.6
-
-      # pnpm must be available before setup-node resolves the pnpm store path.
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          # Match chains gate.yml / java-chains-server frontend.node.version
-          node-version: '22.12.0'
-          cache: 'pnpm'
-          cache-dependency-path: java-chains-web-element/pnpm-lock.yaml
-
-      - name: Install Source-Tag Build Dependencies
-        run: scripts/ci/install-local-deps.sh
-
-      - name: Build Ship Artifacts (Element SPA + CLI)
-        run: |
-          set -euo pipefail
-          # Product SPA = java-chains-web-element (pnpm → generated-resources/static).
-          # Prefer in-tree ship script from chains; fall back to release-repo copy.
-          if [ ! -f scripts/frontend/package-java-chains-web-element.sh ]; then
-            install -m 0755 _release_ci/.github/scripts/package-java-chains-web-element.sh \
-              scripts/frontend/package-java-chains-web-element.sh
-          fi
-
-          # ONE Maven invocation: second `mvn -am package` without -Pfrontend reuses
-          # server target/ but a new maven.build.timestamp → Vector A session mismatch.
-          # Product surface: server + java-chains-cli (no java-chains-sdk).
-          MVN_ARGS=(
-            --threads 1C
-            -pl java-chains-server,java-chains-cli
-            -am
-            clean
-            package
-            -DskipTests
-            -Pfrontend
-            "-Dfrontend.working.directory=${PWD}/java-chains-web-element"
-            "-Dfrontend.package.script=${PWD}/scripts/frontend/package-java-chains-web-element.sh"
-          )
-          mvn "${MVN_ARGS[@]}"
+          test ! -f tagged-build/INTERNAL.txt
 
       - name: Verify Public Ship Surface
         run: |
           set -euo pipefail
-          VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
-          SERVER_JAR=""
-          for candidate in \
-            "java-chains-${VERSION}-exec.jar" \
-            "java-chains-server-${VERSION}-exec.jar" \
-            "java-chains-server/target/java-chains-server-${VERSION}-exec.jar" \
-            "java-chains-server/target/java-chains-${VERSION}-exec.jar"
-          do
-            if [ -f "$candidate" ]; then
-              SERVER_JAR="$candidate"
-              break
-            fi
-          done
-          test -f "${SERVER_JAR:-}" || { echo "Public server jar missing"; exit 1; }
-          _release_ci/.github/scripts/verify-public-ship-surface.sh "$SERVER_JAR"
+          test -f tagged-build/java-chains.jar
+          .github/scripts/verify-public-ship-surface.sh tagged-build/java-chains.jar
 
-      - name: Prepare Base Artifacts
+      - name: Checkout pinned runtime configuration
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve_release_meta.outputs.chains_config_repository }}
+          ref: ${{ needs.resolve_release_meta.outputs.chains_config_ref }}
+          token: ${{ secrets.DEPENDENCY_REPO_TOKEN }}
+          path: release-deps/chains-config
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prepare public base artifacts
         run: |
+          set -euo pipefail
           mkdir -p release_base
-          VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
+          test -f tagged-build/java-chains.jar
+          test -f tagged-build/java-chains-cli.jar
+          test -f tagged-build/RELEASE-NOTES.md
+          cp tagged-build/java-chains.jar release_base/java-chains.jar
+          cp tagged-build/java-chains-cli.jar release_base/java-chains-cli.jar
+          cp tagged-build/RELEASE-NOTES.md release_base/RELEASE-NOTES.md
+          cp tagged-build/TAG-BUILD.txt release_base/TAG-BUILD.txt
 
-          pick_first() {
-            local candidate
-            for candidate in "$@"; do
-              if [ -f "$candidate" ]; then
-                printf '%s\n' "$candidate"
-                return 0
-              fi
-            done
-            return 1
-          }
-
-          # 1. Server Spring Boot fat jar (SPA embedded). Publish as java-chains.jar.
-          SERVER_JAR="$(pick_first \
-            "java-chains-${VERSION}-exec.jar" \
-            "java-chains-server-${VERSION}-exec.jar" \
-            "java-chains-server/target/java-chains-server-${VERSION}-exec.jar" \
-            "java-chains-server/target/java-chains-${VERSION}-exec.jar" \
-          )" || true
-
-          if [ -z "${SERVER_JAR:-}" ]; then
-            SERVER_JAR="$(find . -maxdepth 2 -type f \( \
-              -name "java-chains-*-exec.jar" -o -name "java-chains-server-*-exec.jar" \
-            \) ! -name "*-sources.jar" ! -name "*-javadoc.jar" | sort | head -n 1 || true)"
-          fi
-
-          if [ -f "${SERVER_JAR:-}" ]; then
-            echo "Found Server Jar: ${SERVER_JAR}"
-            cp "$SERVER_JAR" release_base/java-chains.jar
-          else
-            echo "Error: java-chains server exec jar not found"
-            find . -maxdepth 3 -type f -name "*.jar" | sort | head -n 80
-            exit 1
-          fi
-
-          # 2. Product CLI fat jar (java-chains-cli). Keep a thin remote jar if present.
-          CLI_JAR="$(pick_first \
-            "java-chains-cli/target/java-chains-cli-${VERSION}-jar-with-dependencies.jar" \
-            "java-chains-cli/target/java-chains-cli-${VERSION}.jar" \
-          )" || true
-
-          if [ -z "${CLI_JAR:-}" ]; then
-            CLI_JAR="$(find java-chains-cli/target -type f -name "java-chains-cli-*-jar-with-dependencies.jar" 2>/dev/null | sort | head -n 1 || true)"
-          fi
-
-          if [ -f "${CLI_JAR:-}" ]; then
-            echo "Found CLI Jar: ${CLI_JAR}"
-            cp "$CLI_JAR" release_base/java-chains-cli.jar
-          else
-            echo "Error: java-chains-cli fat jar not found"
-            exit 1
-          fi
-
-          CLI_REMOTE_JAR="$(pick_first \
-            "java-chains-cli-remote/target/java-chains-cli-remote-${VERSION}-jar-with-dependencies.jar" \
-            "java-chains-cli-remote/target/java-chains-cli-remote-${VERSION}.jar" \
-          )" || true
-          if [ -f "${CLI_REMOTE_JAR:-}" ]; then
-            echo "Found CLI remote Jar: ${CLI_REMOTE_JAR}"
-            cp "$CLI_REMOTE_JAR" release_base/java-chains-cli-remote.jar
-          fi
-
-          # 3. Runtime config (plugins / third-libs / presets)
           cp -r release-deps/chains-config release_base/chains-config
           rm -rf release_base/chains-config/.git
+          mkdir -p release_base/chains-config/presets
+          cp tagged-build/chains-config/presets/official-presets.yaml \
+            release_base/chains-config/presets/official-presets.yaml
 
-          if [ -d chains-config ]; then
-            # Overlay any in-tree config additions (e.g. presets) without wiping deps.
-            cp -a chains-config/. release_base/chains-config/ 2>/dev/null || true
-            rm -rf release_base/chains-config/.git
-          fi
+          echo "Artifact layout:"
+          find release_base -type f | sort
 
-      # ── 源码防泄漏：销毁所有源码，确保 artifact 只含编译产物 ──
-      - name: Purge Source Code
+      - name: Purge packaging clones from runner
         if: always()
         run: |
+          set -euo pipefail
           rm -rf release-deps
-
-          if find release_base -type f \( \
+          if [ -d release_base ] && find release_base -type f \( \
             -name "*.java" -o -name "*.go" -o -name "*.ts" -o -name "*.tsx" \
             -o -name "*.vue" -o -name "*.jsx" -o -name "*.py" \
             -o -name "*-sources.jar" -o -name "*-javadoc.jar" \
-            -o -name ".git" -o -name ".gitignore" \
-            -o -name "pom.xml" -o -name "package.json" -o -name "go.mod" \
+            -o -name "pom.xml" -o -name "package.json" \
           \) | grep -q .; then
             echo "ERROR: Source code files detected in release artifacts!"
-            find release_base -type f \( \
-              -name "*.java" -o -name "*.go" -o -name "*.ts" -o -name "*.tsx" \
-              -o -name "*.vue" -o -name "*.jsx" -o -name "*.py" \
-              -o -name "*-sources.jar" -o -name "*-javadoc.jar" \
-              -o -name ".git" -o -name ".gitignore" \
-              -o -name "pom.xml" -o -name "package.json" -o -name "go.mod" \
-            \)
+            find release_base -type f | sort
             exit 1
           fi
-
           find release_base -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
 
-          echo "Artifact contents:"
-          find release_base -type f | sort
+      - name: Push public base to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve_release_meta.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          tar -C release_base -czf public-base.tar.gz .
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Release $RELEASE_TAG" \
+              --notes "Public packaging in progress for ${RELEASE_TAG}." \
+              --draft
+          fi
+          gh release upload "$RELEASE_TAG" public-base.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
 
-      - name: Upload Base Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: base-artifacts
-          path: release_base/
-          # JARs are already compressed. Store them without another zlib pass;
-          # this upload gates every packaging and Docker job.
-          compression-level: 0
-
-  # ====================================================
-  # Job 2: Create Release
-  # ====================================================
   create_release:
     needs: [ resolve_release_meta, build ]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    # No actions/* uses: — avoids GitHub "GetResolveActionsDownloadInfo" 503 during Set up job.
-    # Notes are generated inline; gh is preinstalled on ubuntu-latest.
     steps:
-      - name: Create GitHub Release
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch verified release notes from GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHAINS_RELEASE_TAG: ${{ needs.resolve_release_meta.outputs.release_tag }}
+        run: .github/scripts/fetch-release-tarball.sh public-base.tar.gz base
+
+      - name: Create or update GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           RELEASE_TAG="${{ needs.resolve_release_meta.outputs.release_tag }}"
           RELEASE_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
           SOURCE_REF="${{ needs.resolve_release_meta.outputs.source_ref }}"
           SOURCE_SHA="${{ needs.build.outputs.source_sha }}"
           VERIFICATION_URL="${{ needs.resolve_release_meta.outputs.verification_run_url }}"
           FRONTEND_SHA="${{ needs.build.outputs.frontend_sha }}"
+          FRONTEND_REACT_SHA="${{ needs.build.outputs.frontend_react_sha }}"
+          FRONTEND_ELEMENT_SHA="${{ needs.build.outputs.frontend_element_sha }}"
           IS_PRERELEASE="${{ needs.resolve_release_meta.outputs.is_prerelease }}"
           PUBLISH_RELEASE="${{ needs.resolve_release_meta.outputs.publish_release }}"
 
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists, skip creation."
-            exit 0
-          fi
-
+          test -f base/RELEASE-NOTES.md
           cat > release-notes.txt <<EOF
-          Auto-generated release for version ${RELEASE_VERSION}
+          Auto-generated public release for version ${RELEASE_VERSION}
 
           Backend repository: Java-Chains/chains
           Verified source tag: ${SOURCE_REF}
           Backend commit: ${SOURCE_SHA}
           Source test/build evidence: ${VERIFICATION_URL}
 
-          Frontend: java-chains-web-element (Vue3 + Element Plus, in-tree)
-          Frontend commit: ${FRONTEND_SHA}
+          Frontend: dual SPA from the verified tagged build (React at \`/\`, Element at \`/element/\`)
+          Frontend commit (default React SPA): ${FRONTEND_SHA}
+          Frontend commit (React): ${FRONTEND_REACT_SHA}
+          Frontend commit (Element): ${FRONTEND_ELEMENT_SHA}
+
+          EOF
+          cat base/RELEASE-NOTES.md >> release-notes.txt
+          cat >> release-notes.txt <<EOF
 
           Artifacts:
-          - java-chains-\${VERSION}.tar.gz — Server (SPA from java-chains-web-element) + chains-config
-          - java-chains-\${VERSION}-<platform>.tar.gz|zip — Server + bundled JDK 8
-          - java-chains-cli-\${VERSION}.tar.gz — Product CLI fat jar + chains-config
+          - java-chains-${RELEASE_VERSION}.tar.gz — Server (both SPAs) + chains-config
+          - java-chains-${RELEASE_VERSION}-<platform>.tar.gz|zip — Server + bundled JDK 8
+          - java-chains-cli-${RELEASE_VERSION}.tar.gz — Product CLI fat jar + chains-config
           - Docker: javachains/javachains:${RELEASE_VERSION}
           EOF
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; update notes and publish flags."
+            EDIT_ARGS=(
+              "$RELEASE_TAG"
+              --repo "$GITHUB_REPOSITORY"
+              --title "Release $RELEASE_TAG"
+              --notes-file release-notes.txt
+            )
+            if [ "$PUBLISH_RELEASE" = "true" ]; then
+              EDIT_ARGS+=(--draft=false)
+            fi
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              EDIT_ARGS+=(--prerelease)
+            else
+              EDIT_ARGS+=(--prerelease=false)
+            fi
+            gh release edit "${EDIT_ARGS[@]}"
+            exit 0
+          fi
 
           ARGS=(
             "$RELEASE_TAG"
@@ -505,29 +340,20 @@ jobs:
             --repo "$GITHUB_REPOSITORY"
             --notes-file release-notes.txt
           )
-
-          # Default: draft. Set workflow input publish=true to publish immediately.
           if [ "$PUBLISH_RELEASE" != "true" ]; then
             ARGS+=(--draft)
             echo "Creating DRAFT release $RELEASE_TAG"
           else
             echo "Creating PUBLISHED release $RELEASE_TAG (publish=true)"
           fi
-
           if [ "$IS_PRERELEASE" = "true" ]; then
             ARGS+=(--prerelease)
           fi
-
           gh release create "${ARGS[@]}"
 
-  # ====================================================
-  # Job 3: 矩阵打包 (Server + JDK)
-  # ====================================================
   bundle_assets:
     needs: [ resolve_release_meta, build, create_release ]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -554,13 +380,19 @@ jobs:
             ext: tar.gz
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          name: base-artifacts
-          path: base
+          persist-credentials: false
+
+      - name: Fetch public base from GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHAINS_RELEASE_TAG: ${{ needs.resolve_release_meta.outputs.release_tag }}
+        run: .github/scripts/fetch-release-tarball.sh public-base.tar.gz base
 
       - name: Download JDK 8
         run: |
+          set -euo pipefail
           API_URL="https://api.adoptium.net/v3/binary/latest/8/ga/${{ matrix.os_api }}/${{ matrix.arch_api }}/jdk/hotspot/normal/eclipse"
 
           USE_AZUL="false"
@@ -577,10 +409,10 @@ jobs:
           fi
 
           if [ "${{ matrix.ext }}" = "zip" ]; then
-            curl -L "$API_URL" -o jdk_bundle.zip
+            curl -fsSL "$API_URL" -o jdk_bundle.zip
             unzip -q jdk_bundle.zip -d jdk_extracted
           else
-            curl -L "$API_URL" -o jdk_bundle.tar.gz
+            curl -fsSL "$API_URL" -o jdk_bundle.tar.gz
             mkdir jdk_extracted
             tar -xzf jdk_bundle.tar.gz -C jdk_extracted
           fi
@@ -595,6 +427,7 @@ jobs:
 
       - name: Create Distribution Structure
         run: |
+          set -euo pipefail
           DIST_DIR="java-chains-${{ needs.resolve_release_meta.outputs.release_version }}-${{ matrix.suffix }}"
           mkdir -p "$DIST_DIR"
 
@@ -606,6 +439,7 @@ jobs:
 
       - name: Generate Start Scripts
         run: |
+          set -euo pipefail
           cd "${{ env.DIST_DIR }}"
           if [ "${{ matrix.os_api }}" != "windows" ]; then
             printf '%s\n' \
@@ -629,11 +463,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           RELEASE_TAG="${{ needs.resolve_release_meta.outputs.release_tag }}"
           ASSET_NAME="${{ env.DIST_DIR }}.${{ matrix.ext }}"
           if [ "${{ matrix.ext }}" = "zip" ]; then
-            # JDKs/JARs are already compressed; level 1 avoids wasting CPU for
-            # negligible size savings on the parallel distribution jobs.
             zip -r -q -1 "$ASSET_NAME" "${{ env.DIST_DIR }}"
           else
             tar -I 'gzip -1' -cf "$ASSET_NAME" "${{ env.DIST_DIR }}"
@@ -641,19 +474,19 @@ jobs:
 
           gh release upload "$RELEASE_TAG" "$ASSET_NAME" --clobber --repo "$GITHUB_REPOSITORY"
 
-  # ====================================================
-  # Job 4: 上传通用包 / CLI / SDK
-  # ====================================================
   upload_standard_assets:
     needs: [ resolve_release_meta, build, create_release ]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          name: base-artifacts
-          path: base
+          persist-credentials: false
+
+      - name: Fetch public base from GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHAINS_RELEASE_TAG: ${{ needs.resolve_release_meta.outputs.release_tag }}
+        run: .github/scripts/fetch-release-tarball.sh public-base.tar.gz base
 
       - name: Create and Upload Assets
         env:
@@ -663,16 +496,14 @@ jobs:
           RELEASE_TAG="${{ needs.resolve_release_meta.outputs.release_tag }}"
           RELEASE_VERSION="${{ needs.resolve_release_meta.outputs.release_version }}"
           cd base
+          test -f java-chains.jar
+          test -f java-chains-cli.jar
+          test -d chains-config
 
           mkdir cli_dist
           cp java-chains-cli.jar cli_dist/
           cp -r chains-config cli_dist/
-          if [ -f java-chains-cli-remote.jar ]; then
-            cp java-chains-cli-remote.jar cli_dist/
-          fi
 
-          # These archives are independent. Build both on separate runner cores,
-          # then upload them with one GitHub API call.
           tar -I 'gzip -1' -cf "java-chains-${RELEASE_VERSION}.tar.gz" \
             java-chains.jar chains-config &
           SERVER_ARCHIVE_PID=$!
@@ -688,9 +519,6 @@ jobs:
             "java-chains-cli-${RELEASE_VERSION}.tar.gz" \
             --clobber --repo "$GITHUB_REPOSITORY"
 
-  # ====================================================
-  # Job 5: Docker Build（每个架构使用独立 runner）
-  # ====================================================
   docker_build:
     needs: [ resolve_release_meta, build ]
     runs-on: ubuntu-latest
@@ -707,15 +535,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: base-artifacts
-          path: .
+      - name: Fetch public base from GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHAINS_RELEASE_TAG: ${{ needs.resolve_release_meta.outputs.release_tag }}
+        run: .github/scripts/fetch-release-tarball.sh public-base.tar.gz base
 
       - name: Prepare Docker context
         run: |
-          # Docker image only needs the server jar + chains-config
-          rm -f java-chains-cli.jar java-chains-cli-remote.jar
+          set -euo pipefail
+          cp base/java-chains.jar .
+          rm -rf chains-config
+          cp -r base/chains-config .
           test -f java-chains.jar
           test -d chains-config
           ls -la
@@ -739,37 +570,33 @@ jobs:
           cache-from: type=gha,scope=java-chains-${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=java-chains-${{ matrix.suffix }}
 
-      - name: Export image digest
-        shell: bash
+      - name: Publish image digest
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_DIGEST: ${{ steps.docker_build.outputs.digest }}
+          RELEASE_TAG: ${{ needs.resolve_release_meta.outputs.release_tag }}
         run: |
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          mkdir -p /tmp/docker-digests
-          touch "/tmp/docker-digests/${IMAGE_DIGEST#sha256:}"
+          DIGEST_FILE="docker-digest-${{ matrix.suffix }}.txt"
+          printf '%s\n' "${IMAGE_DIGEST#sha256:}" > "$DIGEST_FILE"
+          gh release upload "$RELEASE_TAG" "$DIGEST_FILE" --clobber --repo "$GITHUB_REPOSITORY"
 
-      - name: Upload image digest
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-digest-${{ matrix.suffix }}
-          path: /tmp/docker-digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  # ====================================================
-  # Job 6: 合并 Docker 多架构 manifest
-  # ====================================================
   docker_merge:
     needs: [ resolve_release_meta, docker_build ]
     runs-on: ubuntu-latest
     steps:
       - name: Download image digests
-        uses: actions/download-artifact@v4
-        with:
-          pattern: docker-digest-*
-          path: /tmp/docker-digests
-          merge-multiple: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve_release_meta.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/docker-digests
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'docker-digest-*.txt' \
+            --dir /tmp/docker-digests
 
       - uses: docker/setup-buildx-action@v3
 
@@ -786,9 +613,10 @@ jobs:
           set -euo pipefail
 
           shopt -s nullglob
-          DIGEST_FILES=(/tmp/docker-digests/*)
+          DIGEST_FILES=(/tmp/docker-digests/docker-digest-*.txt)
           [ "${#DIGEST_FILES[@]}" -eq 2 ] || {
             echo "Expected 2 Docker digests, found ${#DIGEST_FILES[@]}"
+            ls -la /tmp/docker-digests || true
             exit 1
           }
 
@@ -803,9 +631,12 @@ jobs:
 
           DIGEST_REFS=()
           for digest_file in "${DIGEST_FILES[@]}"; do
-            digest="${digest_file##*/}"
+            digest="$(tr -d '[:space:]' < "$digest_file")"
+            if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              digest="${digest#sha256:}"
+            fi
             [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || {
-              echo "Invalid Docker digest file: $digest"
+              echo "Invalid Docker digest file: $digest_file ($digest)"
               exit 1
             }
             DIGEST_REFS+=("javachains/javachains@sha256:${digest}")

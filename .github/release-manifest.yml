@@ -1,16 +1,16 @@
 schema_version: 1
 
 # Pin runtime packaging repositories for reproducible product releases.
-# Build-time dependencies come from the verified source tag's committed
-# scripts/ci/vendor tree via scripts/ci/install-local-deps.sh, exactly as in
-# the upstream Tag Test and Build workflow.
+#
+# Product bits come from the verified Java-Chains/chains GitHub Release asset
+# `tag-build.tar.gz` (public edition, profiles=frontend, both SPAs already baked
+# into the server jar). This repository only overlays pinned chains-config,
+# bundles JDK 8, and pushes Docker. Do not rebuild with Maven.
 #
 # Naming (2026):
 #   - Backend / packaging monorepo: Java-Chains/chains
-#   - Product SPA: chains/java-chains-web-element (Vue3 + Element Plus, in-tree)
-#     Built with pnpm in release CI, then packaged into the server jar via -Pfrontend
-#     + .github/scripts/package-java-chains-web-element.sh (not React java-chains-web).
-#   - This repository: product release/CI home (java-chains; formerly web-chains)
+#   - Product SPAs: baked into the tagged public jar (React at `/`, Element at `/element/`)
+#   - This repository: public product release/CI home (vulhub/java-chains)
 dependencies:
   chains_config:
     repository: Java-Chains/chains-config
