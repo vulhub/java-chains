@@ -692,3 +692,28 @@ jobs:
                 }
             done
           done <<< "$DOCKER_TAGS"
+
+  cleanup_handoff:
+    name: remove public-base handoff from download list
+    if: always() && needs.build.result == 'success'
+    needs:
+      - resolve_release_meta
+      - build
+      - create_release
+      - bundle_assets
+      - upload_standard_assets
+      - docker_build
+      - docker_merge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete public-base.tar.gz from the GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve_release_meta.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          names="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          if printf '%s\n' "$names" | grep -qx 'public-base.tar.gz'; then
+            gh release delete-asset "$RELEASE_TAG" public-base.tar.gz --yes --repo "$GITHUB_REPOSITORY"
+          fi
+

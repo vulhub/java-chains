@@ -34,6 +34,7 @@ bundle = job(workflow, "bundle_assets")
 standard = job(workflow, "upload_standard_assets")
 docker_build = job(workflow, "docker_build")
 docker_merge = job(workflow, "docker_merge")
+cleanup = job(workflow, "cleanup_handoff")
 
 for forbidden in ("actions/upload-artifact", "actions/download-artifact"):
     if forbidden in workflow:
@@ -128,6 +129,15 @@ if "publish_release == 'true'" not in docker_build:
     raise SystemExit("docker build must stay off draft releases")
 if "publish_release == 'true'" not in docker_merge:
     raise SystemExit("docker merge must stay off draft releases")
+
+if "cleanup_handoff" not in workflow:
+    raise SystemExit("public release must delete public-base.tar.gz after packaging jobs finish")
+if "gh release delete-asset" not in cleanup:
+    raise SystemExit("cleanup job must delete public-base.tar.gz from the GitHub Release")
+if "public-base.tar.gz" not in cleanup:
+    raise SystemExit("cleanup job must target public-base.tar.gz")
+if "always()" not in cleanup:
+    raise SystemExit("cleanup job must run even when docker jobs are skipped on draft releases")
 
 if "Java-Chains/chains" not in manifest:
     raise SystemExit("release manifest must keep pointing at the source repository")
