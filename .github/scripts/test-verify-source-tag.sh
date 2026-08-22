@@ -8,8 +8,6 @@ trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
 SOURCE_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 TAG_OBJECT_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-RUN_ID="987654321"
-RUN_URL="https://github.com/Java-Chains/chains/actions/runs/${RUN_ID}"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -19,18 +17,12 @@ fail() {
 write_success_fixtures() {
   printf '%s\trefs/tags/v2.0.0-beta8\n' "$TAG_OBJECT_SHA" > "$TMP_DIR/ls-remote"
   printf '%s\trefs/tags/v2.0.0-beta8^{}\n' "$SOURCE_SHA" >> "$TMP_DIR/ls-remote"
-  printf '{"workflow_runs":[{"id":%s,"head_sha":"%s","event":"push","status":"completed","conclusion":"success","html_url":"%s"}]}\n' \
-    "$RUN_ID" "$SOURCE_SHA" "$RUN_URL" > "$TMP_DIR/runs.json"
-  printf '{"assets":[{"name":"tag-build.tar.gz","state":"uploaded"}]}\n' \
-    > "$TMP_DIR/release-assets.json"
 }
 
 run_verifier() {
   RELEASE_VERSION="${TEST_VERSION:-2.0.0-beta8}" \
     SOURCE_REF="${TEST_SOURCE_REF:-v2.0.0-beta8}" \
   CHAINS_LS_REMOTE_FILE="$TMP_DIR/ls-remote" \
-  CHAINS_WORKFLOW_RUNS_FILE="$TMP_DIR/runs.json" \
-  CHAINS_RELEASE_ASSETS_FILE="$TMP_DIR/release-assets.json" \
   VERIFIED_SOURCE_OUTPUT="$TMP_DIR/output" \
     "$VERIFIER"
 }
@@ -44,10 +36,13 @@ write_success_fixtures
 run_verifier >/dev/null
 assert_output "source_ref=v2.0.0-beta8"
 assert_output "source_sha=$SOURCE_SHA"
-assert_output "verification_run_id=$RUN_ID"
-assert_output "verification_run_url=$RUN_URL"
-assert_output "verification_artifact=tag-build.tar.gz"
-echo "PASS: annotated source tag resolves to verified commit"
+if grep -q 'verification_run_id=' "$TMP_DIR/output"; then
+  fail "source-tag resolver must not require upstream Tag Test evidence"
+fi
+if grep -q 'verification_artifact=' "$TMP_DIR/output"; then
+  fail "source-tag resolver must not require tag-build.tar.gz"
+fi
+echo "PASS: annotated source tag resolves to commit"
 
 write_success_fixtures
 if TEST_SOURCE_REF="main" run_verifier >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"; then
@@ -58,24 +53,13 @@ grep -F "source_ref must equal the release tag" "$TMP_DIR/stderr" >/dev/null \
 echo "PASS: branch source_ref rejected"
 
 write_success_fixtures
-printf '{"workflow_runs":[{"id":%s,"head_sha":"%s","event":"push","status":"completed","conclusion":"failure","html_url":"%s"}]}\n' \
-  "$RUN_ID" "$SOURCE_SHA" "$RUN_URL" > "$TMP_DIR/runs.json"
+: > "$TMP_DIR/ls-remote"
 if run_verifier >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"; then
-  fail "failed upstream workflow should be rejected"
+  fail "missing source tag should be rejected"
 fi
-grep -F "no successful tag-test-build.yml run" "$TMP_DIR/stderr" >/dev/null \
-  || fail "missing failed-run rejection"
-echo "PASS: failed upstream run rejected"
-
-write_success_fixtures
-printf '{"assets":[]}\n' > "$TMP_DIR/release-assets.json"
-if run_verifier >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"; then
-  fail "source Release without tag-build.tar.gz should be rejected"
-fi
-grep -F "verified source Release must include uploaded asset tag-build.tar.gz" \
-  "$TMP_DIR/stderr" >/dev/null \
-  || fail "missing source-release-asset rejection"
-echo "PASS: missing source Release tarball rejected"
+grep -F "source tag does not exist" "$TMP_DIR/stderr" >/dev/null \
+  || fail "missing tag rejection"
+echo "PASS: missing source tag rejected"
 
 write_success_fixtures
 if TEST_VERSION="2.0.0-beta8-internal" \

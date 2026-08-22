@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Resolve a public source tag and require successful upstream tag verification.
+# Resolve a public source tag on Java-Chains/chains.
+# Packaging happens in this repository from that commit; a successful source
+# Tag Test / tag-build.tar.gz is not required.
 set -euo pipefail
 
 die() {
@@ -11,7 +13,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 RELEASE_VERSION="${RELEASE_VERSION:-}"
 SOURCE_REF="${SOURCE_REF:-}"
 CHAINS_REPOSITORY="${CHAINS_REPOSITORY:-Java-Chains/chains}"
-TAG_TEST_WORKFLOW="${TAG_TEST_WORKFLOW:-tag-test-build.yml}"
 OUTPUT_FILE="${VERIFIED_SOURCE_OUTPUT:-${GITHUB_OUTPUT:-}}"
 AUTH_SCRIPT="${CHAINS_GIT_AUTH_SCRIPT:-${SCRIPT_DIR}/git-authed.sh}"
 
@@ -54,73 +55,11 @@ if ! [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
 fi
 SOURCE_SHA="$(printf '%s' "$SOURCE_SHA" | tr '[:upper:]' '[:lower:]')"
 
-command -v jq >/dev/null 2>&1 || die "jq is required"
-
-RUNS_FILE="${CHAINS_WORKFLOW_RUNS_FILE:-${TMP_DIR}/workflow-runs.json}"
-if [ -z "${CHAINS_WORKFLOW_RUNS_FILE:-}" ]; then
-  [ -n "${DEPENDENCY_REPO_TOKEN:-}" ] \
-    || die "DEPENDENCY_REPO_TOKEN is required to read upstream Actions runs"
-  if ! GH_TOKEN="$DEPENDENCY_REPO_TOKEN" gh api --method GET \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "repos/${CHAINS_REPOSITORY}/actions/workflows/${TAG_TEST_WORKFLOW}/runs" \
-    -f event=push -f head_sha="$SOURCE_SHA" -f status=success -f per_page=100 \
-    > "$RUNS_FILE"; then
-    die "cannot read upstream workflow runs; DEPENDENCY_REPO_TOKEN needs Actions: read on $CHAINS_REPOSITORY"
-  fi
-fi
-
-RUN_ID="$(jq -r --arg sha "$SOURCE_SHA" '
-  [
-    .workflow_runs[]?
-    | select(
-        (.head_sha | ascii_downcase) == $sha
-        and .event == "push"
-        and .status == "completed"
-        and .conclusion == "success"
-      )
-  ]
-  | sort_by(.id)
-  | last
-  | .id // empty
-' "$RUNS_FILE")"
-[ -n "$RUN_ID" ] \
-  || die "no successful ${TAG_TEST_WORKFLOW} run for tag=$SOURCE_REF sha=$SOURCE_SHA"
-
-RUN_URL="$(jq -r --argjson id "$RUN_ID" '
-  .workflow_runs[]? | select(.id == $id) | .html_url
-' "$RUNS_FILE" | tail -n 1)"
-[ -n "$RUN_URL" ] && [ "$RUN_URL" != "null" ] \
-  || die "verified workflow run is missing html_url: $RUN_ID"
-
-ASSETS_FILE="${CHAINS_RELEASE_ASSETS_FILE:-${TMP_DIR}/release-assets.json}"
-if [ -z "${CHAINS_RELEASE_ASSETS_FILE:-}" ]; then
-  [ -n "${DEPENDENCY_REPO_TOKEN:-}" ] \
-    || die "DEPENDENCY_REPO_TOKEN is required to read the source GitHub Release"
-  if ! GH_TOKEN="$DEPENDENCY_REPO_TOKEN" gh api --method GET \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "repos/${CHAINS_REPOSITORY}/releases/tags/${SOURCE_REF}" \
-    > "$ASSETS_FILE"; then
-    die "cannot read GitHub Release for $SOURCE_REF on $CHAINS_REPOSITORY"
-  fi
-fi
-
-ASSET_NAME="tag-build.tar.gz"
-ASSET_COUNT="$(jq -r --arg name "$ASSET_NAME" '
-  [.assets[]? | select(.name == $name and (.state == "uploaded" or .state == null))] | length
-' "$ASSETS_FILE")"
-[ "$ASSET_COUNT" = "1" ] \
-  || die "verified source Release must include uploaded asset $ASSET_NAME"
-
 if [ -n "$OUTPUT_FILE" ]; then
   {
     echo "source_ref=$SOURCE_REF"
     echo "source_sha=$SOURCE_SHA"
-    echo "verification_run_id=$RUN_ID"
-    echo "verification_run_url=$RUN_URL"
-    echo "verification_artifact=$ASSET_NAME"
   } >> "$OUTPUT_FILE"
 fi
 
-echo "verified-source-tag: tag=$SOURCE_REF sha=$SOURCE_SHA run=$RUN_ID asset=$ASSET_NAME"
+echo "verified-source-tag: tag=$SOURCE_REF sha=$SOURCE_SHA"
