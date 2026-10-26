@@ -65,7 +65,7 @@ docker run -d \
   -p 11527:11527 \
   -e CHAINS_AUTH=true \
   -e CHAINS_PASS= \
-  javachains/javachains:2.0.0-beta7
+  javachains/javachains:latest   # or pin a version, e.g. javachains/javachains:2.0.1
 ```
 
 Empty `CHAINS_PASS` → a random password is generated at startup (see the `Auth` line in logs).  
@@ -76,8 +76,8 @@ Empty `CHAINS_PASS` → a random password is generated at startup (see the `Auth
 Requires **OpenJDK / Temurin / Zulu JDK 8** (Oracle JDK 8 is not recommended for BCEL chains).
 
 ```bash
-tar -xzf java-chains-2.0.0-beta7.tar.gz
-cd java-chains-2.0.0-beta7   # or unpack layout with java-chains.jar + chains-config/
+tar -xzf java-chains-2.0.1.tar.gz
+cd java-chains-2.0.1     # or unpack layout with java-chains.jar + chains-config/
 java -jar java-chains.jar
 ```
 
