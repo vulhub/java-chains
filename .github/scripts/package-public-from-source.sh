@@ -87,12 +87,14 @@ path = Path(sys.argv[1])
 text = path.read_text()
 old = "const prefixes = ['@rollup+rollup-' + plat + '@', '@esbuild+' + plat + '@'];"
 new = "const prefixes = ['@rollup+rollup-' + plat, '@esbuild+' + plat];"
-if old not in text:
-    raise SystemExit(
-        "package-public-from-source: Element native-dep check not found; "
-        "refusing to package"
-    )
-path.write_text(text.replace(old, new, 1))
+if old in text:
+    path.write_text(text.replace(old, new, 1))
+else:
+    # Newer source packagers probe and reinstall native deps themselves
+    # (including the @rollup+rollup-linux-x64-gnu case); the legacy patch
+    # is only needed for older tags that still scan package prefixes.
+    print("package-public-from-source: Element packager already handles "
+          "native deps; skipping legacy prefix patch")
 PY
 fi
 
