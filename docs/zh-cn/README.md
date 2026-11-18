@@ -65,7 +65,7 @@ docker run -d \
   -p 11527:11527 \
   -e CHAINS_AUTH=true \
   -e CHAINS_PASS= \
-  javachains/javachains:2.0.0-beta7
+  javachains/javachains:2.0.2
 ```
 
 `CHAINS_PASS` 为空时启动会随机生成密码，见日志中的 `Auth` 行。
@@ -77,8 +77,8 @@ docker run -d \
 需要 **OpenJDK / Temurin / Zulu JDK 8**（Oracle JDK 8 不推荐，BCEL 相关链可能失败）。
 
 ```bash
-tar -xzf java-chains-2.0.0-beta7.tar.gz
-cd java-chains-2.0.0-beta7   # 或解压后目录内含 java-chains.jar + chains-config/
+tar -xzf java-chains-2.0.2.tar.gz
+cd java-chains-2.0.2   # 或解压后目录内含 java-chains.jar + chains-config/
 java -jar java-chains.jar
 ```
 

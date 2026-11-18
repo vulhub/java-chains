@@ -1,3 +1,16 @@
+## 2.0.2
+
+#### 🚀 新增功能
+
+- **MemShellParty 3.1.0** — 内置 MemShellParty 从 2.9.0 升级到 3.1.0（`memshell-party-bom` + `memshell-party-api` / `core` / `packer` / `server-*` / `shelltool-*`）。新增 Tomcat RawWebSocket 内存马、3.x 回显（probe）包装（可选择回显方式与回显内容）、`GodzillaSession`；上游已移除 `Suo5v2`。Byte Buddy 同步到 1.18.14。
+
+#### 🐛 问题修复
+
+- **LibrarySet 节点从工作台消失** — c3p0/mchange 的 `Reference`/`Jndi`/`HexSerialize` 与 Hibernate 系列在搜索结果中可见、却无法在链条工作台选择，原因是 LibrarySet 上下文重复加载了 `Gadget` 接口。现已恢复，可直接拼出 `JavaNative Serialization → C3p0_C3p0Reference → TomcatElRef`。
+- **`bytecode.dnslog` 预设** — 类路径上残留的 `javassist:javassist:3.12` 会让 `DNSLogWithInfo`/`DNSLogAndHttp` 在 gadget 扫描时被静默丢弃。现在扫描会兜底恢复解析失败的类，并排除重复的 javassist。
+- **`jndi.ref.groovy` 预设** — `END` 被当成"必须终止"，导致 `GroovyShellRef → GroovyConvert → …` 校验失败（生成本身可用）。现在 `END` 表示"可以终止"，仍接受输入的节点会继续给出候选。
+- **发行包可能无法启动** — `BOOT-INF/lib` 嵌套顺序会让 shaded 的框架副本（jmg-sdk 的 Spring 5.3.29、javaee-16 的 Servlet 3.0）遮蔽宿主 Spring/Tomcat API。打包阶段现在会确定性重排嵌套 jar 顺序。
+
 ## 2.0.0-beta3
 
 #### 🚀 新增功能

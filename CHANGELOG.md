@@ -1,3 +1,16 @@
+## 2.0.2
+
+#### 🚀 New Features
+
+- **MemShellParty 3.1.0** — the bundled MemShellParty integration is upgraded from 2.9.0 to 3.1.0 (`memshell-party-bom` + `memshell-party-api` / `core` / `packer` / `server-*` / `shelltool-*`). Adds Tomcat RawWebSocket shells, the 3.x probe (echo) wrapper with selectable probe method/content, and `GodzillaSession`; `Suo5v2` is retired upstream. Byte Buddy is aligned to 1.18.14.
+
+#### 🐛 Bug Fixes
+
+- **LibrarySet nodes missing from Studio** — c3p0/mchange `Reference`/`Jndi`/`HexSerialize` and the Hibernate gadgets were dropped from the gadget registry while still visible in search, because the LibrarySet context defined a second copy of the `Gadget` API. They are selectable again, including `JavaNative Serialization → C3p0_C3p0Reference → TomcatElRef`.
+- **`bytecode.dnslog` preset** — a legacy `javassist:javassist:3.12` on the classpath hid `DNSLogWithInfo`/`DNSLogAndHttp` from gadget discovery. Discovery now recovers classes the bytecode parser cannot read, and the duplicate javassist is excluded.
+- **`jndi.ref.groovy` preset** — `END` was treated as "must be terminal", so `GroovyShellRef → GroovyConvert → …` failed validation even though it generated. `END` now means "may terminate", and a node that still accepts input keeps its candidates.
+- **Shipped jar could fail to start** — nested `BOOT-INF/lib` ordering let shaded framework copies (jmg-sdk's Spring 5.3.29, javaee-16's Servlet 3.0) shadow the host Spring/Tomcat APIs. Packaging now normalizes the nested jar order deterministically.
+
 ## 2.0.0-beta3
 
 #### 🚀 New Features
